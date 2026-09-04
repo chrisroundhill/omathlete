@@ -1,11 +1,20 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+fixture_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/fixtures" && pwd)
+url="${!#}"
+
+[[ " $* " == *" --compressed "* && " $* " == *" --max-time "* ]] || exit 22
 [[ ${OMATHLETE_FIXTURE_FAILURE:-0} != 1 ]] || exit 22
 [[ ${OMATHLETE_FIXTURE_MALFORMED:-0} != 1 ]] || { printf '{not-json'; exit 0; }
 
-fixture_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/fixtures" && pwd)
-url="${!#}"
+# The test double writes what curl would expose after --compressed decoding.
+if [[ ${OMATHLETE_FIXTURE_OVERSIZED:-0} == 1 && $url == */schedule* ]]; then
+  printf '{"padding":"'
+  /usr/bin/head -c 9000000 /dev/zero 2>/dev/null | tr '\0' x 2>/dev/null
+  printf '"}'
+  exit 0
+fi
 
 case "$url" in
   */football/nfl/*) sport=nfl ;;
@@ -22,6 +31,17 @@ esac
 
 team=$(jq -ce --arg sport "$sport" '.[] | select(.sport == $sport)' \
   "$fixture_dir/provider-teams.json")
+
+if [[ $url == *'/teams?limit=1000' ]]; then
+  jq -cn --argjson team "$team" '
+    (if (env.OMATHLETE_FIXTURE_MANY_CATALOG // "0") == "1" then 1200 else 1 end) as $count
+    | {sports:[{leagues:[{teams:[range(0; $count) as $index | {team:{
+        id:(($index + 1) | tostring),
+        displayName:("Team " + ($index | tostring)),
+        abbreviation:("T" + ($index | tostring))
+      }}]}]}]}'
+  exit 0
+fi
 
 jq -cn --argjson team "$team" --arg url "$url" '
   {
@@ -69,4 +89,10 @@ jq -cn --argjson team "$team" --arg url "$url" '
     else . end
   | if ($url | contains("/scoreboard"))
     then .events[].competitions[0].competitors[].score |= .displayValue
+    else . end
+  | if ($url | contains("/scoreboard"))
+      and (env.OMATHLETE_FIXTURE_MANY_EVENTS // "0") == "1"
+    then .events[0] as $event
+      | .events = [range(0; 250) as $index | $event
+        | .id = ("many-" + ($index | tostring))]
     else . end'

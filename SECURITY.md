@@ -19,6 +19,12 @@ opened from game rows must use ESPN's HTTPS website origin. Provider data and
 local state are validated before their values become file paths, colors, image
 sources, or browser targets.
 
+Provider JSON responses retain a 12-second-or-shorter deadline and are rejected
+before parsing if their decompressed body exceeds 8 MiB. Cached and derived
+responses have smaller type-specific byte limits. Team catalogs, merged event
+feeds, team schedules, league slates, text fields, and the final JSON emitted to
+the shell are also explicitly bounded.
+
 ESPN's site API is undocumented and may change. Team and league names and logos
 remain the property of their respective owners; their inclusion does not imply
 affiliation or endorsement.

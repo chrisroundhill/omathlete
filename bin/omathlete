@@ -8,6 +8,17 @@ readonly CACHE_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/omarchy/omathlete"
 readonly CACHE_TTL=60
 readonly CATALOG_TTL=$((7 * 24 * 60 * 60))
 readonly MAX_TEAMS=12
+readonly MAX_RESPONSE_BYTES=$((8 * 1024 * 1024))
+readonly MAX_CATALOG_CACHE_BYTES=$((2 * 1024 * 1024))
+readonly MAX_TEAM_CACHE_BYTES=$((64 * 1024))
+readonly MAX_SLATE_CACHE_BYTES=$((512 * 1024))
+readonly MAX_QML_OUTPUT_BYTES=$((1024 * 1024))
+readonly MAX_CATALOG_TEAMS=5000
+readonly MAX_MERGED_EVENTS=1000
+readonly MAX_UPCOMING_GAMES=3
+readonly MAX_TEAM_SCHEDULE_GAMES=5
+readonly MAX_SLATE_GAMES_PER_LEAGUE=100
+readonly MAX_SLATE_GAMES=500
 readonly ESPN_ROOT="https://site.api.espn.com/apis/site/v2/sports"
 readonly CATALOG_FILE="$CACHE_DIR/teams.json"
 CURL_BIN="/usr/bin/curl"
@@ -68,10 +79,36 @@ write_state() {
 }
 
 write_cache() {
-  local path="$1" value="$2" tmp
+  local path="$1" value="$2" max_bytes="$3" tmp size
   tmp=$(mktemp "$CACHE_DIR/.cache.XXXXXX") || return 1
   printf '%s\n' "$value" >"$tmp"
+  size=$(stat -c %s "$tmp") || { rm -f "$tmp"; return 1; }
+  if (( size > max_bytes )); then
+    rm -f "$tmp"
+    return 1
+  fi
   mv -f "$tmp" "$path"
+}
+
+valid_json_file() {
+  local path="$1" max_bytes="$2" size
+  [[ -f $path ]] || return 1
+  size=$(stat -c %s "$path") || return 1
+  (( size > 0 && size <= max_bytes )) || return 1
+  jq -e 'type == "object" or type == "array"' "$path" >/dev/null 2>&1
+}
+
+bounded_output() {
+  local max_bytes="$1" tmp size
+  tmp=$(mktemp "$CACHE_DIR/.output.XXXXXX") || return 1
+  /usr/bin/head -c "$((max_bytes + 1))" >"$tmp"
+  size=$(stat -c %s "$tmp") || { rm -f "$tmp"; return 1; }
+  if (( size > max_bytes )); then
+    rm -f "$tmp"
+    return 1
+  fi
+  cat "$tmp"
+  rm -f "$tmp"
 }
 
 sport_rows() {
@@ -116,10 +153,32 @@ notify() {
   fi
 }
 
+fetch_json() {
+  local url="$1" deadline="${2:-10}" tmp size
+  tmp=$(mktemp "$CACHE_DIR/.response.XXXXXX") || return 1
+  if ! "$CURL_BIN" -fsS --compressed --max-time "$deadline" \
+      --max-filesize "$MAX_RESPONSE_BYTES" "$url" \
+      | /usr/bin/head -c "$((MAX_RESPONSE_BYTES + 1))" >"$tmp"; then
+    rm -f "$tmp"
+    return 1
+  fi
+  size=$(stat -c %s "$tmp") || { rm -f "$tmp"; return 1; }
+  if (( size > MAX_RESPONSE_BYTES )) || ! jq -e 'type == "object" or type == "array"' \
+      "$tmp" >/dev/null 2>&1; then
+    rm -f "$tmp"
+    return 1
+  fi
+  cat "$tmp"
+  rm -f "$tmp"
+}
+
 fetch_teams() {
   local path="$1"
-  "$CURL_BIN" -fsS --compressed --max-time 10 "$ESPN_ROOT/$path/teams?limit=1000" \
-    | jq -r '.sports[0].leagues[0].teams[].team | [.displayName, .id, .abbreviation] | @tsv' \
+  fetch_json "$ESPN_ROOT/$path/teams?limit=1000" 10 \
+    | jq -r '(.sports[0].leagues[0].teams // [])[:1000][].team
+      | select((.id | tostring) | test("^[0-9]{1,12}$"))
+      | [(.displayName | tostring)[:120], (.id | tostring),
+          ((.abbreviation // .shortDisplayName // .displayName) | tostring)[:20]] | @tsv' \
     | sort
 }
 
@@ -141,13 +200,14 @@ refresh_catalog() {
     esac
     part="$work/$sport.json"
     (
-      "$CURL_BIN" -fsS --compressed --max-time 12 "$ESPN_ROOT/$path/teams?limit=1000" \
+      fetch_json "$ESPN_ROOT/$path/teams?limit=1000" 12 \
         | jq -c --arg sport "$sport" --arg league "$label" '
-          [.sports[0].leagues[0].teams[].team | {
+          [(.sports[0].leagues[0].teams // [])[:1000][].team
+          | select((.id | tostring) | test("^[0-9]{1,12}$")) | {
             sport:$sport,
-            teamId:.id,
-            teamName:.displayName,
-            teamAbbrev:(.abbreviation // .shortDisplayName // .displayName),
+            teamId:(.id | tostring),
+            teamName:(.displayName | tostring)[:120],
+            teamAbbrev:((.abbreviation // .shortDisplayName // .displayName) | tostring)[:20],
             league:$league
           }]'
     ) >"$part" &
@@ -158,8 +218,10 @@ refresh_catalog() {
     wait "$pid" || failed=1
   done
 
-  if ! jq -sc 'add | map(select(.teamId and .teamName)) | unique_by(.sport + ":" + .teamId)' \
-      "$work"/*.json >"$work/teams.json" || [[ ! -s "$work/teams.json" ]]; then
+  if ! jq -sc --argjson max "$MAX_CATALOG_TEAMS" \
+      'add | map(select(.teamId and .teamName)) | unique_by(.sport + ":" + .teamId) | .[:$max]' \
+      "$work"/*.json >"$work/teams.json" \
+      || ! valid_json_file "$work/teams.json" "$MAX_CATALOG_CACHE_BYTES"; then
     rm -rf "$work"
     return 1
   fi
@@ -171,7 +233,7 @@ refresh_catalog() {
 ensure_catalog() {
   local age
   ensure_storage
-  if [[ -f "$CATALOG_FILE" ]]; then
+  if valid_json_file "$CATALOG_FILE" "$MAX_CATALOG_CACHE_BYTES"; then
     age=$(( $(date +%s) - $(stat -c %Y "$CATALOG_FILE") ))
     (( age < CATALOG_TTL )) && return
   fi
@@ -327,15 +389,17 @@ team_detail() {
 
   if [[ $no_cache == false && -f "$cache_file" ]]; then
     age=$(( $(date +%s) - $(stat -c %Y "$cache_file") ))
-    if (( age < CACHE_TTL )); then
+    if (( age < CACHE_TTL )) && valid_json_file "$cache_file" "$MAX_TEAM_CACHE_BYTES"; then
       cat "$cache_file"
       return
     fi
   fi
 
-  if ! payload=$("$CURL_BIN" -fsS --compressed --max-time 10 \
-      "$ESPN_ROOT/$path/teams/$team_id/schedule"); then
-    [[ -f "$cache_file" ]] && jq -c '. + {stale:true}' "$cache_file" && return
+  if ! payload=$(fetch_json "$ESPN_ROOT/$path/teams/$team_id/schedule" 10); then
+    if valid_json_file "$cache_file" "$MAX_TEAM_CACHE_BYTES"; then
+      jq -c '. + {stale:true}' "$cache_file"
+      return
+    fi
     jq -cn --arg sport "$sport" --arg id "$team_id" --arg name "$name" --arg abbrev "$abbrev" \
       '{sport:$sport,teamId:$id,teamName:$name,teamAbbrev:$abbrev,teamLogo:"",teamColor:"",teamAlternateColor:"",current:null,upcoming:null,schedule:[],stale:true}'
     return
@@ -348,11 +412,12 @@ team_detail() {
   # result and the next meaningful games are both available.
   if [[ $sport == nfl || $sport == cfb ]]; then
     season_year=$(jq -r '.season.year // empty' <<<"$payload" 2>/dev/null)
-    if [[ $season_year =~ ^[0-9]{4}$ ]] && regular=$("$CURL_BIN" -fsS --compressed --max-time 10 \
-        "$ESPN_ROOT/$path/teams/$team_id/schedule?season=$season_year&seasontype=2"); then
-      payload=$(printf '%s\n%s\n' "$payload" "$regular" | jq -sc '
+    if [[ $season_year =~ ^[0-9]{4}$ ]] && regular=$(fetch_json \
+        "$ESPN_ROOT/$path/teams/$team_id/schedule?season=$season_year&seasontype=2" 10); then
+      payload=$(printf '%s\n%s\n' "$payload" "$regular" | jq -sc \
+        --argjson max "$MAX_MERGED_EVENTS" '
         .[0] as $base | .[1] as $regular | $base
-        | .events = (($base.events + $regular.events) | unique_by(.id))')
+        | .events = (($base.events + $regular.events) | unique_by(.id) | .[:$max])')
     fi
   fi
 
@@ -371,18 +436,21 @@ team_detail() {
       league_payload=""
       if [[ $no_cache == false && -f $league_cache ]]; then
         league_age=$(( $(date +%s) - $(stat -c %Y "$league_cache") ))
-        if (( league_age < CACHE_TTL )); then league_payload=$(cat "$league_cache"); fi
+        if (( league_age < CACHE_TTL )) && valid_json_file "$league_cache" "$MAX_RESPONSE_BYTES"; then
+          league_payload=$(cat "$league_cache")
+        fi
       fi
-      if [[ -z $league_payload ]] && league_payload=$("$CURL_BIN" -fsS --compressed --max-time 10 \
-          "$ESPN_ROOT/$path/scoreboard?dates=$season_year&limit=1000"); then
-        write_cache "$league_cache" "$league_payload"
+      if [[ -z $league_payload ]] && league_payload=$(fetch_json \
+          "$ESPN_ROOT/$path/scoreboard?dates=$season_year&limit=1000" 10); then
+        write_cache "$league_cache" "$league_payload" "$MAX_RESPONSE_BYTES"
       fi
       if [[ -n $league_payload ]]; then
-        if merged_payload=$(printf '%s\n%s\n' "$payload" "$league_payload" | jq -sc --arg id "$team_id" '
+        if merged_payload=$(printf '%s\n%s\n' "$payload" "$league_payload" | jq -sc \
+          --arg id "$team_id" --argjson max "$MAX_MERGED_EVENTS" '
           .[0] as $base | .[1] as $league | $base
           | .events = (($base.events + [($league.events // [])[]
-              | select(any(.competitions[0].competitors[]?; .team.id == $id))])
-            | unique_by(.id))' 2>/dev/null); then
+              | select(any(.competitions[0].competitors[]?; .team.id == $id))][:200])
+            | unique_by(.id) | .[:$max])' 2>/dev/null); then
           payload="$merged_payload"
         fi
       fi
@@ -390,11 +458,13 @@ team_detail() {
   fi
 
   jq -c --arg sport "$sport" --arg id "$team_id" --arg name "$name" --arg abbrev "$abbrev" \
-    --argjson now "$now" '
+    --argjson now "$now" --argjson maxUpcoming "$MAX_UPCOMING_GAMES" \
+    --argjson maxSchedule "$MAX_TEAM_SCHEDULE_GAMES" '
       def epoch:
         (if test("T[0-9]{2}:[0-9]{2}Z$") then sub("Z$"; ":00Z") else . end)
         | try fromdateiso8601 catch 0;
       def side($event; $where): [$event.competitions[0].competitors[]? | select(.homeAway == $where)][0];
+      def text($length): tostring | .[:$length];
       def view($event):
         (side($event; "home")) as $home |
         (side($event; "away")) as $away |
@@ -402,28 +472,28 @@ team_detail() {
         (if $isHome then $home else $away end) as $mine |
         (if $isHome then $away else $home end) as $other |
         {
-          state: ($event.competitions[0].status.type.state // "pre"),
-          detail: ($event.competitions[0].status.type.shortDetail // "Scheduled"),
+          state: (($event.competitions[0].status.type.state // "pre") | text(12)),
+          detail: (($event.competitions[0].status.type.shortDetail // "Scheduled") | text(120)),
           isHome: $isHome,
-          opponent: ($other.team.abbreviation // $other.team.displayName // "TBD"),
+          opponent: (($other.team.abbreviation // $other.team.displayName // "TBD") | text(40)),
           teamScore: (if ($mine.score | type) == "object"
-            then ($mine.score.displayValue // "0") else (($mine.score // "0") | tostring) end),
+            then (($mine.score.displayValue // "0") | text(20)) else (($mine.score // "0") | text(20)) end),
           opponentScore: (if ($other.score | type) == "object"
-            then ($other.score.displayValue // "0") else (($other.score // "0") | tostring) end),
-          date: $event.date,
+            then (($other.score.displayValue // "0") | text(20)) else (($other.score // "0") | text(20)) end),
+          date: ($event.date | text(64)),
           when: (($event.date | epoch) | strflocaltime("%a, %b %-d · %-I:%M %p")),
-          broadcast: ($event.competitions[0].broadcasts[0].media.shortName
-            // $event.competitions[0].broadcasts[0].names[0] // ""),
-          gameUrl: ([($event.links // [])[]
+          broadcast: (($event.competitions[0].broadcasts[0].media.shortName
+            // $event.competitions[0].broadcasts[0].names[0] // "") | text(80)),
+          gameUrl: (([($event.links // [])[]
             | select((.href // "") | test("^https://www\\.espn\\.com/"))
             | select((.rel // []) | index("summary"))
             | select((.rel // []) | index("desktop"))
-            | .href][0] // "")
+            | .href][0] // "") | text(512))
         };
       (.events // []) as $events |
       (.team // {}) as $team |
-      (if (($team.logo // "") | test("^https://a\\.espncdn\\.com/"))
-        then $team.logo else "" end) as $teamLogo |
+      (($team.logo // "") | text(512)) as $logo |
+      (if ($logo | test("^https://a\\.espncdn\\.com/")) then $logo else "" end) as $teamLogo |
       (if (($team.color // "") | test("^[0-9A-Fa-f]{6}$"))
         then ("#" + $team.color) else "" end) as $teamColor |
       (if (($team.alternateColor // "") | test("^[0-9A-Fa-f]{6}$"))
@@ -433,11 +503,12 @@ team_detail() {
       ([$events[] | select(.competitions[0].status.type.state == "post")
         | select((.date | epoch) <= ($now + 3600))] | sort_by(.date) | last) as $recent |
       ([$events[] | select(.competitions[0].status.type.state == "pre")
-        | select((.date | epoch) >= ($now - 3600))] | sort_by(.date) | .[:3]) as $nextGames |
+        | select((.date | epoch) >= ($now - 3600))] | sort_by(.date) | .[:$maxUpcoming]) as $nextGames |
       ($nextGames[0] // null) as $next |
       ((if $live then [(view($live) + {kind:"live", section:"LIVE"})] else [] end)
         + (if $recent then [(view($recent) + {kind:"recent", section:"LATEST"})] else [] end)
-        + [$nextGames[] | (view(.) + {kind:"upcoming", section:"UPCOMING"})]) as $schedule |
+        + [$nextGames[] | (view(.) + {kind:"upcoming", section:"UPCOMING"})]
+        | .[:$maxSchedule]) as $schedule |
       {
         sport:$sport, teamId:$id, teamName:$name, teamAbbrev:$abbrev,
         teamLogo:$teamLogo, teamColor:$teamColor, teamAlternateColor:$teamAlternateColor,
@@ -450,7 +521,7 @@ team_detail() {
         schedule:$schedule,
         stale:false
       }
-    ' <<<"$payload" 2>/dev/null | tee "$cache_file"
+    ' <<<"$payload" 2>/dev/null | bounded_output "$MAX_TEAM_CACHE_BYTES" | tee "$cache_file"
 }
 
 detail() {
@@ -507,10 +578,11 @@ detail() {
           // ([$teams[] | select(.upcoming != null)] | sort_by(.upcoming.date) | first)
           // null
         )
-      }'
+        }' | bounded_output "$MAX_QML_OUTPUT_BYTES"
   else
     jq -cn --argjson hidden "$spoilers" --arg sortMode "$sort_mode" --argjson pinnedTeam "$pinned" \
-      '{schemaVersion:1,spoilersHidden:$hidden,sortMode:$sortMode,pinnedTeam:$pinnedTeam,stale:false,teams:[],primary:null}'
+      '{schemaVersion:1,spoilersHidden:$hidden,sortMode:$sortMode,pinnedTeam:$pinnedTeam,stale:false,teams:[],primary:null}' \
+      | bounded_output "$MAX_QML_OUTPUT_BYTES"
   fi
 }
 
@@ -522,51 +594,56 @@ slate_sport() {
 
   if [[ $force == false && -f $cache_file ]]; then
     age=$(( $(date +%s) - $(stat -c %Y "$cache_file") ))
-    if (( age < CACHE_TTL )); then
+    if (( age < CACHE_TTL )) && valid_json_file "$cache_file" "$MAX_SLATE_CACHE_BYTES"; then
       cat "$cache_file"
       return
     fi
   fi
 
-  if ! payload=$("$CURL_BIN" -fsS --compressed --max-time 10 \
-      "$ESPN_ROOT/$path/scoreboard?dates=$date_key&limit=500"); then
-    [[ -f $cache_file ]] && jq -c 'map(. + {stale:true})' "$cache_file" && return
+  if ! payload=$(fetch_json "$ESPN_ROOT/$path/scoreboard?dates=$date_key&limit=500" 10); then
+    if valid_json_file "$cache_file" "$MAX_SLATE_CACHE_BYTES"; then
+      jq -c 'map(. + {stale:true})' "$cache_file"
+      return
+    fi
     printf '%s\n' '[]'
     return
   fi
 
-  jq -c --arg sport "$sport" --arg league "$label" '
-    def epoch:
+  jq -c --arg sport "$sport" --arg league "$label" \
+    --argjson max "$MAX_SLATE_GAMES_PER_LEAGUE" '
+      def epoch:
       (if test("T[0-9]{2}:[0-9]{2}Z$") then sub("Z$"; ":00Z") else . end)
       | try fromdateiso8601 catch 0;
-    [(.events // [])[] as $event
+      def text($length): tostring | .[:$length];
+      [(.events // [])[] as $event
       | ($event.competitions[0].competitors // []) as $teams
       | ([$teams[] | select(.homeAway == "home")][0]) as $home
       | ([$teams[] | select(.homeAway == "away")][0]) as $away
       | {
-          id:($event.id | tostring), sport:$sport, league:$league,
-          homeTeam:($home.team.abbreviation // $home.team.shortDisplayName // "TBD"),
-          awayTeam:($away.team.abbreviation // $away.team.shortDisplayName // "TBD"),
-          homeScore:($home.score // "0" | tostring),
-          awayScore:($away.score // "0" | tostring),
-          state:($event.competitions[0].status.type.state // "pre"),
-          detail:($event.competitions[0].status.type.shortDetail // "Scheduled"),
-          date:$event.date,
+          id:($event.id | text(64)), sport:$sport, league:$league,
+          homeTeam:(($home.team.abbreviation // $home.team.shortDisplayName // "TBD") | text(40)),
+          awayTeam:(($away.team.abbreviation // $away.team.shortDisplayName // "TBD") | text(40)),
+          homeScore:(($home.score // "0") | text(20)),
+          awayScore:(($away.score // "0") | text(20)),
+          state:(($event.competitions[0].status.type.state // "pre") | text(12)),
+          detail:(($event.competitions[0].status.type.shortDetail // "Scheduled") | text(120)),
+          date:($event.date | text(64)),
           when:(($event.date | epoch) | strflocaltime("%-I:%M %p")),
-          broadcast:($event.competitions[0].broadcasts[0].media.shortName
-            // $event.competitions[0].broadcasts[0].names[0] // ""),
-          gameUrl:([($event.links // [])[]
+          broadcast:(($event.competitions[0].broadcasts[0].media.shortName
+            // $event.competitions[0].broadcasts[0].names[0] // "") | text(80)),
+          gameUrl:(([($event.links // [])[]
             | select((.href // "") | test("^https://www\\.espn\\.com/"))
             | select((.rel // []) | index("summary"))
             | select((.rel // []) | index("desktop"))
-            | .href][0] // ""),
+            | .href][0] // "") | text(512)),
           stale:false,
           rank:(if $event.competitions[0].status.type.state == "in" then 0
             elif $event.competitions[0].status.type.state == "pre" then 1 else 2 end)
         }]
     | sort_by(.rank, .date)
+    | .[:$max]
     | map(del(.rank))
-  ' <<<"$payload" | tee "$cache_file"
+  ' <<<"$payload" | bounded_output "$MAX_SLATE_CACHE_BYTES" | tee "$cache_file"
 }
 
 full_slate() {
@@ -585,14 +662,17 @@ full_slate() {
   done < <(jq -r '.teams | map(.sport) | unique[]' <<<"$state")
 
   if ((${#parts[@]})); then
-    games=$(printf '%s\n' "${parts[@]}" | jq -sc 'add | unique_by(.sport + ":" + .id)
-      | sort_by((if .state == "in" then 0 elif .state == "pre" then 1 else 2 end), .date)')
+    games=$(printf '%s\n' "${parts[@]}" | jq -sc --argjson max "$MAX_SLATE_GAMES" \
+      'add | unique_by(.sport + ":" + .id)
+      | sort_by((if .state == "in" then 0 elif .state == "pre" then 1 else 2 end), .date)
+      | .[:$max]')
   else
     games='[]'
   fi
   jq -cn --arg date "$date_key" --argjson hidden "$hidden" --argjson stale "$stale" \
     --argjson games "$games" \
-    '{date:$date,spoilersHidden:$hidden,stale:$stale,games:$games,leagues:($games | map(.league) | unique)}'
+    '{date:$date,spoilersHidden:$hidden,stale:$stale,games:$games,leagues:($games | map(.league) | unique)}' \
+    | bounded_output "$MAX_QML_OUTPUT_BYTES"
 }
 
 case "${1:-}" in
