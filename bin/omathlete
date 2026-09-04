@@ -67,6 +67,13 @@ write_state() {
   mv -f "$tmp" "$STATE_FILE"
 }
 
+write_cache() {
+  local path="$1" value="$2" tmp
+  tmp=$(mktemp "$CACHE_DIR/.cache.XXXXXX") || return 1
+  printf '%s\n' "$value" >"$tmp"
+  mv -f "$tmp" "$path"
+}
+
 sport_rows() {
   printf '\tNFL\tnfl\n'
   printf '\tNBA\tnba\n'
@@ -368,7 +375,7 @@ team_detail() {
       fi
       if [[ -z $league_payload ]] && league_payload=$("$CURL_BIN" -fsS --compressed --max-time 10 \
           "$ESPN_ROOT/$path/scoreboard?dates=$season_year&limit=1000"); then
-        printf '%s\n' "$league_payload" >"$league_cache"
+        write_cache "$league_cache" "$league_payload"
       fi
       if [[ -n $league_payload ]]; then
         if merged_payload=$(printf '%s\n%s\n' "$payload" "$league_payload" | jq -sc --arg id "$team_id" '
@@ -448,8 +455,8 @@ team_detail() {
 
 detail() {
   local no_cache=false live_only=false state spoilers sort_mode pinned count index team item key requested
-  local -a items=() live_keys=()
-  local stale=false
+  local work pid force_team stale=false
+  local -a items=() live_keys=() pids=()
   if [[ ${1:-} == "--no-cache" ]]; then
     no_cache=true
   elif [[ ${1:-} == "--live" ]]; then
@@ -462,19 +469,29 @@ detail() {
   sort_mode=$(jq -r '.sortMode' <<<"$state")
   pinned=$(jq -c '.pinnedTeam' <<<"$state")
   count=$(jq '.teams | length' <<<"$state")
+  work=$(mktemp -d "$CACHE_DIR/.detail.XXXXXX") || return 1
   for ((index=0; index<count; index++)); do
     team=$(jq -c ".teams[$index]" <<<"$state")
+    force_team="$no_cache"
     if [[ $live_only == true ]]; then
-      no_cache=false
+      force_team=false
       key="$(jq -r '.sport + ":" + .teamId' <<<"$team")"
       for requested in "${live_keys[@]}"; do
-        if [[ $requested == "$key" ]]; then no_cache=true; break; fi
+        if [[ $requested == "$key" ]]; then force_team=true; break; fi
       done
     fi
-    item=$(team_detail "$team" "$no_cache") || continue
+    (team_detail "$team" "$force_team" >"$work/$index.json") &
+    pids[index]=$!
+  done
+  for pid in "${pids[@]}"; do wait "$pid" || true; done
+  for ((index=0; index<count; index++)); do
+    [[ -s $work/$index.json ]] || continue
+    item=$(cat "$work/$index.json")
+    jq -e 'type == "object"' <<<"$item" >/dev/null 2>&1 || continue
     [[ $(jq -r '.stale // false' <<<"$item") == true ]] && stale=true
     items+=("$item")
   done
+  rm -rf "$work"
   if ((${#items[@]})); then
     printf '%s\n' "${items[@]}" | jq -sc --argjson hidden "$spoilers" --argjson stale "$stale" \
       --arg sortMode "$sort_mode" --argjson pinnedTeam "$pinned" \

@@ -65,6 +65,8 @@ Panel {
     ? "Omathlete · " + barLabel + (spoilersHidden ? " · scores hidden" : "")
     : "Omathlete · your teams"
 
+  Component.onCompleted: root.refresh(false)
+
   onSelectedIndexChanged: Qt.callLater(function() { root.ensureItemVisible(teamRepeater.itemAt(root.selectedIndex)) })
   onSearchSelectedIndexChanged: Qt.callLater(function() { root.ensureItemVisible(searchRepeater.itemAt(root.searchSelectedIndex)) })
   onGameSelectedIndexChanged: Qt.callLater(function() { root.ensureItemVisible(detailRepeater.itemAt(root.gameSelectedIndex)) })
