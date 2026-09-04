@@ -349,10 +349,10 @@ team_detail() {
     fi
   fi
 
-  # ESPN's Premier League team endpoint can lag behind its league scoreboard
+  # ESPN's soccer team endpoints can lag behind their league scoreboards
   # and omit scheduled fixtures. Only fall back when no future game exists,
-  # and share the league response across every followed EPL team.
-  if [[ $sport == epl ]]; then
+  # and share each league response across its followed teams.
+  if [[ $sport == epl || $sport == mls ]]; then
     season_year=$(jq -r '.season.year // empty' <<<"$payload" 2>/dev/null)
     if [[ $season_year =~ ^[0-9]{4}$ ]] && ! jq -e --argjson now "$now" '
         any((.events // [])[];
@@ -360,7 +360,7 @@ team_detail() {
           and ((.date | if test("T[0-9]{2}:[0-9]{2}Z$") then sub("Z$"; ":00Z") else . end
             | try fromdateiso8601 catch 0) >= ($now - 3600)))
       ' <<<"$payload" >/dev/null 2>&1; then
-      league_cache="$CACHE_DIR/epl-$season_year.json"
+      league_cache="$CACHE_DIR/$sport-$season_year.json"
       league_payload=""
       if [[ $no_cache == false && -f $league_cache ]]; then
         league_age=$(( $(date +%s) - $(stat -c %Y "$league_cache") ))

@@ -62,7 +62,8 @@ jq -cn --argjson team "$team" --arg url "$url" '
       }
     ]
   }
-  | if $team.sport == "epl" and (env.OMATHLETE_FIXTURE_TEAM_PAST_ONLY // "0") == "1"
+  | if ($team.sport == "epl" or $team.sport == "mls")
+      and (env.OMATHLETE_FIXTURE_SOCCER_PAST_ONLY // "0") == "1"
       and ($url | contains("/teams/"))
     then .events |= map(select(.competitions[0].status.type.state == "post"))
     else . end

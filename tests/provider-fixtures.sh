@@ -50,10 +50,13 @@ jq -e '.pinnedTeam == {sport:"nfl",teamId:"3"}' \
 "$repo_dir/bin/omathlete" toggle-pin nfl 3
 jq -e '.pinnedTeam == null' < <("$repo_dir/bin/omathlete" state) >/dev/null
 
-epl_fallback=$(OMATHLETE_FIXTURE_TEAM_PAST_ONLY=1 "$repo_dir/bin/omathlete" detail --no-cache)
-jq -e 'any(.teams[]; .sport == "epl" and .upcoming != null
-  and .upcoming.opponent == "OPP" and .upcoming.broadcast == "TEST")' \
-  <<<"$epl_fallback" >/dev/null
+soccer_fallback=$(OMATHLETE_FIXTURE_SOCCER_PAST_ONLY=1 "$repo_dir/bin/omathlete" detail --no-cache)
+jq -e '
+  any(.teams[]; .sport == "epl" and .upcoming != null
+    and .upcoming.opponent == "OPP" and .upcoming.broadcast == "TEST")
+  and any(.teams[]; .sport == "mls" and .upcoming != null
+    and .upcoming.opponent == "OPP" and .upcoming.broadcast == "TEST")
+' <<<"$soccer_fallback" >/dev/null
 
 offline=$(OMATHLETE_FIXTURE_FAILURE=1 "$repo_dir/bin/omathlete" detail --no-cache)
 jq -e '.stale == true and (.teams | length) == 9 and all(.teams[]; .stale == true)' \
