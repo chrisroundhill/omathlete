@@ -23,7 +23,7 @@ esac
 team=$(jq -ce --arg sport "$sport" '.[] | select(.sport == $sport)' \
   "$fixture_dir/provider-teams.json")
 
-jq -cn --argjson team "$team" '
+jq -cn --argjson team "$team" --arg url "$url" '
   {
     team:{
       id:$team.teamId,
@@ -61,4 +61,11 @@ jq -cn --argjson team "$team" '
         links:[{href:"https://www.espn.com/test/game",rel:["summary","desktop"]}]
       }
     ]
-  }'
+  }
+  | if $team.sport == "epl" and (env.OMATHLETE_FIXTURE_TEAM_PAST_ONLY // "0") == "1"
+      and ($url | contains("/teams/"))
+    then .events |= map(select(.competitions[0].status.type.state == "post"))
+    else . end
+  | if ($url | contains("/scoreboard"))
+    then .events[].competitions[0].competitors[].score |= .displayValue
+    else . end'

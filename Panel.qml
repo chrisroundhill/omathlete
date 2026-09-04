@@ -1158,18 +1158,35 @@ Panel {
                     font.family: root.bar ? root.bar.fontFamily : Style.font.family
                     font.pixelSize: Style.font.body
                   }
-                  Text {
+                  Row {
                     visible: !!modelData.upcoming
                     width: parent.width
-                    text: modelData.upcoming
-                      ? "Next: " + (modelData.upcoming.isHome ? "vs " : "@ ")
-                        + modelData.upcoming.opponent + " · " + modelData.upcoming.when
-                        + (modelData.upcoming.broadcast ? " · " + modelData.upcoming.broadcast : "")
-                      : ""
-                    color: Qt.darker(root.barForeground, 1.25)
-                    elide: Text.ElideRight
-                    font.family: root.bar ? root.bar.fontFamily : Style.font.family
-                    font.pixelSize: Style.font.bodySmall
+                    spacing: Style.space(8)
+
+                    Text {
+                      width: parent.width - homeBroadcast.width - parent.spacing
+                      text: modelData.upcoming
+                        ? "Next: " + (modelData.upcoming.isHome ? "vs " : "@ ")
+                          + modelData.upcoming.opponent + " · " + modelData.upcoming.when
+                        : ""
+                      color: Qt.darker(root.barForeground, 1.25)
+                      elide: Text.ElideRight
+                      font.family: root.bar ? root.bar.fontFamily : Style.font.family
+                      font.pixelSize: Style.font.bodySmall
+                    }
+
+                    Text {
+                      id: homeBroadcast
+                      width: Math.min(implicitWidth, Style.space(72))
+                      text: modelData.upcoming && modelData.upcoming.broadcast
+                        ? modelData.upcoming.broadcast : "TV TBA"
+                      color: Color.accent
+                      horizontalAlignment: Text.AlignRight
+                      elide: Text.ElideRight
+                      font.family: root.bar ? root.bar.fontFamily : Style.font.family
+                      font.pixelSize: Style.font.bodySmall
+                      font.bold: true
+                    }
                   }
                 }
               }
