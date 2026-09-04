@@ -1,0 +1,28 @@
+{
+  "schemaVersion": 1,
+  "id": "io.github.chrisroundhill.omathlete",
+  "name": "Omathlete",
+  "version": "0.1.0",
+  "author": "Chris Roundhill",
+  "license": "MIT",
+  "description": "Upcoming games, live scores, and broadcast details for your favorite teams.",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "BarWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "Omathlete",
+    "description": "Your teams. Right on time.",
+    "category": "Sports",
+    "aliases": [
+      "sports",
+      "scores",
+      "schedule",
+      "games"
+    ],
+    "allowMultiple": false,
+    "defaultSection": "right"
+  }
+}

@@ -1,0 +1,11 @@
+[
+  {"sport":"nfl","teamId":"3","teamName":"Chicago Bears","teamAbbrev":"CHI","color":"0b1c3a","logo":"https://a.espncdn.com/i/teamlogos/nfl/500/chi.png"},
+  {"sport":"nba","teamId":"4","teamName":"Chicago Bulls","teamAbbrev":"CHI","color":"ce1141","logo":"https://a.espncdn.com/i/teamlogos/nba/500/chi.png"},
+  {"sport":"wnba","teamId":"14","teamName":"Chicago Sky","teamAbbrev":"CHI","color":"418fde","logo":"https://a.espncdn.com/i/teamlogos/wnba/500/chi.png"},
+  {"sport":"mlb","teamId":"16","teamName":"Chicago Cubs","teamAbbrev":"CHC","color":"0e3386","logo":"https://a.espncdn.com/i/teamlogos/mlb/500/chc.png"},
+  {"sport":"nhl","teamId":"16","teamName":"Chicago Blackhawks","teamAbbrev":"CHI","color":"cf0a2c","logo":"https://a.espncdn.com/i/teamlogos/nhl/500/chi.png"},
+  {"sport":"cfb","teamId":"2294","teamName":"Iowa Hawkeyes","teamAbbrev":"IOW","color":"ffcd00","logo":"https://a.espncdn.com/i/teamlogos/ncaa/500/2294.png"},
+  {"sport":"cbb","teamId":"2294","teamName":"Iowa Hawkeyes","teamAbbrev":"IOWA","color":"ffcd00","logo":"https://a.espncdn.com/i/teamlogos/ncaa/500/2294.png"},
+  {"sport":"epl","teamId":"364","teamName":"Liverpool","teamAbbrev":"LIV","color":"d00027","logo":"https://a.espncdn.com/i/teamlogos/soccer/500/364.png"},
+  {"sport":"mls","teamId":"9726","teamName":"Seattle Sounders FC","teamAbbrev":"SEA","color":"2dc84d","logo":"https://a.espncdn.com/i/teamlogos/soccer/500/9726.png"}
+]

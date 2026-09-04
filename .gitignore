@@ -1,0 +1,4 @@
+.omathlete-test-state/
+*.tmp
+*.log
+.DS_Store

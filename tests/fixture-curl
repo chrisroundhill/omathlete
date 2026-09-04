@@ -1,0 +1,64 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+[[ ${OMATHLETE_FIXTURE_FAILURE:-0} != 1 ]] || exit 22
+[[ ${OMATHLETE_FIXTURE_MALFORMED:-0} != 1 ]] || { printf '{not-json'; exit 0; }
+
+fixture_dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/fixtures" && pwd)
+url="${!#}"
+
+case "$url" in
+  */football/nfl/*) sport=nfl ;;
+  */basketball/wnba/*) sport=wnba ;;
+  */basketball/nba/*) sport=nba ;;
+  */baseball/mlb/*) sport=mlb ;;
+  */hockey/nhl/*) sport=nhl ;;
+  */football/college-football/*) sport=cfb ;;
+  */basketball/mens-college-basketball/*) sport=cbb ;;
+  */soccer/eng.1/*) sport=epl ;;
+  */soccer/usa.1/*) sport=mls ;;
+  *) exit 22 ;;
+esac
+
+team=$(jq -ce --arg sport "$sport" '.[] | select(.sport == $sport)' \
+  "$fixture_dir/provider-teams.json")
+
+jq -cn --argjson team "$team" '
+  {
+    team:{
+      id:$team.teamId,
+      displayName:$team.teamName,
+      abbreviation:$team.teamAbbrev,
+      color:$team.color,
+      logo:$team.logo
+    },
+    season:{year:2026},
+    events:[
+      {
+        id:("live-" + $team.sport),
+        date:"2020-01-01T15:00Z",
+        competitions:[{
+          status:{type:{state:"in",shortDetail:"Q2 4:20"}},
+          competitors:[
+            {homeAway:"home",team:{id:$team.teamId,abbreviation:$team.teamAbbrev},score:{displayValue:"14"}},
+            {homeAway:"away",team:{id:"999999",abbreviation:"OPP"},score:{displayValue:"7"}}
+          ],
+          broadcasts:[{media:{shortName:"TEST"}}]
+        }],
+        links:[{href:"https://www.espn.com/test/game",rel:["summary","desktop"]}]
+      },
+      {
+        id:("next-" + $team.sport),
+        date:"2099-09-05T20:00Z",
+        competitions:[{
+          status:{type:{state:"pre",shortDetail:"Scheduled"}},
+          competitors:[
+            {homeAway:"home",team:{id:"999999",abbreviation:"OPP"},score:{displayValue:"0"}},
+            {homeAway:"away",team:{id:$team.teamId,abbreviation:$team.teamAbbrev},score:{displayValue:"0"}}
+          ],
+          broadcasts:[{media:{shortName:"TEST"}}]
+        }],
+        links:[{href:"https://www.espn.com/test/game",rel:["summary","desktop"]}]
+      }
+    ]
+  }'
