@@ -24,14 +24,14 @@ basketball, Premier League, and MLS.
 ## Next slices
 
 1. Accessibility verification.
-2. Favorite ordering and idle bar priority.
-3. Optional game context such as venue and team records.
+2. Optional game context such as venue and team records.
 
 ## Completed slices
 
 - Team marks and theme-safe team accents.
 - Provider fixtures for every supported league and offline/error cases.
 - Targeted live refresh and reduced-motion score-change feedback.
+- Reversible favorite sorting, manual ordering, and idle bar priority.
 
 ## Deliberately deferred
 

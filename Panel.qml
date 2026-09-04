@@ -11,7 +11,7 @@ Panel {
 
   property var anchorItem: null
   property var hostWidget: null
-  property var report: ({ teams: [], spoilersHidden: false, stale: false })
+  property var report: ({ teams: [], spoilersHidden: false, sortMode: "manual", pinnedTeam: null, stale: false })
   property bool busy: false
   property string errorMessage: ""
   property int selectedIndex: 0
@@ -29,8 +29,11 @@ Panel {
   property int slateSelectedIndex: 0
   property int liveBarIndex: 0
   property var scoreFlashTeams: ({})
+  property string pendingSelectionKey: ""
 
-  readonly property var teams: report.teams || []
+  readonly property string sortMode: report.sortMode || "manual"
+  readonly property var pinnedTeam: report.pinnedTeam || null
+  readonly property var teams: sortedTeams(report.teams || [])
   readonly property bool spoilersHidden: report.spoilersHidden === true
   readonly property var liveTeams: {
     var result = []
@@ -41,7 +44,7 @@ Panel {
   }
   readonly property var barTeam: liveTeams.length > 0
     ? liveTeams[liveBarIndex % liveTeams.length]
-    : (report.primary || (teams.length > 0 ? teams[0] : null))
+    : (findTeam(pinnedTeam) || report.primary || (teams.length > 0 ? teams[0] : null))
   readonly property bool barLive: !!barTeam && !!barTeam.current && barTeam.current.state === "in"
   readonly property string backend: decodeURIComponent(
     String(Qt.resolvedUrl(".")).replace(/^file:\/\//, "")) + "bin/omathlete"
@@ -77,6 +80,52 @@ Panel {
     else if (bottom > scoreFlick.contentY + scoreFlick.height)
       scoreFlick.contentY = Math.min(scoreFlick.contentHeight - scoreFlick.height,
         bottom - scoreFlick.height)
+  }
+
+  function teamKey(team) {
+    return team ? team.sport + ":" + team.teamId : ""
+  }
+
+  function findTeam(key) {
+    if (!key) return null
+    var wanted = key.sport + ":" + key.teamId
+    var source = report.teams || []
+    for (var i = 0; i < source.length; i++)
+      if (teamKey(source[i]) === wanted) return source[i]
+    return null
+  }
+
+  function sortedTeams(source) {
+    var result = source.slice()
+    var leagueOrder = {nfl:0, nba:1, wnba:2, mlb:3, nhl:4, cfb:5, cbb:6, epl:7, mls:8}
+    if (sortMode === "next") {
+      result.sort(function(first, second) {
+        var firstLive = first.current && first.current.state === "in"
+        var secondLive = second.current && second.current.state === "in"
+        if (firstLive !== secondLive) return firstLive ? -1 : 1
+        var firstDate = first.upcoming ? Date.parse(first.upcoming.date) : Number.MAX_VALUE
+        var secondDate = second.upcoming ? Date.parse(second.upcoming.date) : Number.MAX_VALUE
+        return firstDate - secondDate || source.indexOf(first) - source.indexOf(second)
+      })
+    } else if (sortMode === "league") {
+      result.sort(function(first, second) {
+        return (leagueOrder[first.sport] === undefined ? 99 : leagueOrder[first.sport])
+          - (leagueOrder[second.sport] === undefined ? 99 : leagueOrder[second.sport])
+          || source.indexOf(first) - source.indexOf(second)
+      })
+    }
+    return result
+  }
+
+  function restoreSelection() {
+    if (!pendingSelectionKey) return
+    for (var i = 0; i < teams.length; i++) {
+      if (teamKey(teams[i]) === pendingSelectionKey) {
+        selectedIndex = i
+        break
+      }
+    }
+    pendingSelectionKey = ""
   }
 
   function colorLuminance(value) {
@@ -222,6 +271,28 @@ Panel {
     if (!spoilerProcess.running) spoilerProcess.running = true
   }
 
+  function cycleSort() {
+    if (sortProcess.running) return
+    pendingSelectionKey = teamKey(teams[Math.max(0, Math.min(selectedIndex, teams.length - 1))])
+    sortProcess.running = true
+  }
+
+  function moveSelected(direction) {
+    if (sortMode !== "manual" || teams.length === 0 || moveProcess.running) return
+    var team = teams[Math.max(0, Math.min(selectedIndex, teams.length - 1))]
+    pendingSelectionKey = teamKey(team)
+    moveProcess.command = [root.backend, "move", team.sport, team.teamId, String(direction)]
+    moveProcess.running = true
+  }
+
+  function togglePinSelected() {
+    if (teams.length === 0 || pinProcess.running) return
+    var team = teams[Math.max(0, Math.min(selectedIndex, teams.length - 1))]
+    pendingSelectionKey = teamKey(team)
+    pinProcess.command = [root.backend, "toggle-pin", team.sport, team.teamId]
+    pinProcess.running = true
+  }
+
   function openTeamDetail() {
     if (teams.length === 0) return
     detailTeam = teams[Math.max(0, Math.min(selectedIndex, teams.length - 1))]
@@ -285,6 +356,7 @@ Panel {
         try {
           root.adoptReport(JSON.parse(raw))
           root.selectedIndex = Math.min(root.selectedIndex, Math.max(0, root.teams.length - 1))
+          root.restoreSelection()
         } catch (error) {
           root.errorMessage = "Could not read sports data"
         }
@@ -364,6 +436,22 @@ Panel {
       root.refresh(false)
       if (root.fullSlateOpen) root.refreshSlate(false)
     }
+  }
+
+  Process {
+    id: sortProcess
+    command: [root.backend, "cycle-sort"]
+    onExited: root.refresh(false)
+  }
+
+  Process {
+    id: moveProcess
+    onExited: root.refresh(false)
+  }
+
+  Process {
+    id: pinProcess
+    onExited: root.refresh(false)
   }
 
   Process {
@@ -464,6 +552,14 @@ Panel {
             root.toggleSpoilers()
             event.accepted = true
           }
+        } else if ((event.modifiers & Qt.ShiftModifier)
+            && (event.key === Qt.Key_J || event.key === Qt.Key_Down)) {
+          root.moveSelected(1)
+          event.accepted = true
+        } else if ((event.modifiers & Qt.ShiftModifier)
+            && (event.key === Qt.Key_K || event.key === Qt.Key_Up)) {
+          root.moveSelected(-1)
+          event.accepted = true
         } else if (event.key === Qt.Key_J || event.key === Qt.Key_Down) {
           root.selectedIndex = Math.min(root.teams.length - 1, root.selectedIndex + 1)
           event.accepted = true
@@ -475,6 +571,12 @@ Panel {
           event.accepted = true
         } else if (event.key === Qt.Key_A) {
           root.toggleFullSlate()
+          event.accepted = true
+        } else if (event.key === Qt.Key_O) {
+          root.cycleSort()
+          event.accepted = true
+        } else if (event.key === Qt.Key_P) {
+          root.togglePinSelected()
           event.accepted = true
         } else if (event.key === Qt.Key_X || event.key === Qt.Key_Delete) {
           root.removeSelected()
@@ -589,7 +691,8 @@ Panel {
               Text {
                 id: myTeamsLabel
                 anchors.centerIn: parent
-                text: "My Teams"
+                text: "My Teams · " + (root.sortMode === "manual" ? "Manual"
+                  : root.sortMode === "next" ? "Next Game" : "League")
                 color: root.barForeground
                 font.family: root.bar ? root.bar.fontFamily : Style.font.family
                 font.pixelSize: Style.font.bodySmall
@@ -1020,13 +1123,25 @@ Panel {
                       color: Color.accent
                     }
                     Text {
-                      width: parent.width - (modelData.current && modelData.current.state === "in"
-                        ? Style.space(14) : 0)
+                      width: parent.width
+                        - (modelData.current && modelData.current.state === "in" ? Style.space(14) : 0)
+                        - (pinLabel.visible ? pinLabel.implicitWidth + Style.space(7) : 0)
                       text: modelData.teamName || modelData.teamAbbrev
                       color: root.barForeground
                       elide: Text.ElideRight
                       font.family: root.bar ? root.bar.fontFamily : Style.font.family
                       font.pixelSize: Style.font.subtitle
+                      font.bold: true
+                    }
+                    Text {
+                      id: pinLabel
+                      visible: !!root.pinnedTeam
+                        && root.pinnedTeam.sport === modelData.sport
+                        && root.pinnedTeam.teamId === modelData.teamId
+                      text: "PIN"
+                      color: Color.accent
+                      font.family: root.bar ? root.bar.fontFamily : Style.font.family
+                      font.pixelSize: Style.font.caption
                       font.bold: true
                     }
                   }
@@ -1094,7 +1209,9 @@ Panel {
               ? "a my teams   j/k move   o open ESPN   s spoilers   r refresh"
               : root.teamDetailOpen
                 ? "j/k move   o open ESPN   s spoilers   h/esc back"
-                : "/ search   a full slate   j/k move   enter details   x remove   s spoilers"
+                : "/ search   a slate   j/k move   o sort   p pin   enter details"
+                  + (root.sortMode === "manual" ? "   shift+j/k reorder" : "")
+                  + "   x remove   s spoilers"
           color: Qt.darker(root.barForeground, 1.4)
           wrapMode: Text.WordWrap
           font.family: root.bar ? root.bar.fontFamily : Style.font.family

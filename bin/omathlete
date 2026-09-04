@@ -20,7 +20,7 @@ ensure_storage() {
   /usr/bin/mkdir -p "$STATE_DIR" "$CACHE_DIR"
   /usr/bin/chmod 700 "$STATE_DIR" "$CACHE_DIR" 2>/dev/null || true
   if [[ ! -f "$STATE_FILE" ]]; then
-    printf '%s\n' '{"schemaVersion":1,"spoilersHidden":false,"teams":[]}' >"$STATE_FILE"
+    printf '%s\n' '{"schemaVersion":1,"spoilersHidden":false,"sortMode":"manual","pinnedTeam":null,"teams":[]}' >"$STATE_FILE"
   fi
   /usr/bin/chmod 600 "$STATE_FILE" 2>/dev/null || true
 }
@@ -30,6 +30,12 @@ read_state() {
   if ! jq -e '
       .schemaVersion == 1
       and (.spoilersHidden | type) == "boolean"
+      and ((.sortMode // "manual") | test("^(manual|next|league)$"))
+      and ((.pinnedTeam // null) == null or
+        ((.pinnedTeam.sport | type) == "string"
+          and (.pinnedTeam.sport | test("^(nfl|nba|wnba|mlb|nhl|cfb|cbb|epl|mls)$"))
+          and (.pinnedTeam.teamId | type) == "string"
+          and (.pinnedTeam.teamId | test("^[0-9]{1,12}$"))))
       and (.teams | type) == "array"
       and (.teams | length) <= 12
       and all(.teams[];
@@ -39,10 +45,18 @@ read_state() {
         and (.teamName | type) == "string" and (.teamName | length) > 0 and (.teamName | length) <= 120
         and (.teamAbbrev | type) == "string" and (.teamAbbrev | length) > 0 and (.teamAbbrev | length) <= 20)
     ' "$STATE_FILE" >/dev/null 2>&1; then
-    printf '%s\n' '{"schemaVersion":1,"spoilersHidden":false,"teams":[]}'
+    printf '%s\n' '{"schemaVersion":1,"spoilersHidden":false,"sortMode":"manual","pinnedTeam":null,"teams":[]}'
     return
   fi
-  jq -c '{schemaVersion, spoilersHidden, teams: (.teams[:12])}' "$STATE_FILE"
+  jq -c '
+    .teams = .teams[:12]
+    | .sortMode = (if (.sortMode // "manual") | test("^(manual|next|league)$")
+        then (.sortMode // "manual") else "manual" end)
+    | .pinnedTeam = ((.pinnedTeam // null) as $pin
+        | if $pin != null and any(.teams[]; .sport == $pin.sport and .teamId == $pin.teamId)
+          then {sport:$pin.sport,teamId:$pin.teamId} else null end)
+    | {schemaVersion,spoilersHidden,sortMode,pinnedTeam,teams}
+  ' "$STATE_FILE"
 }
 
 write_state() {
@@ -232,7 +246,9 @@ remove_team() {
   name=$(jq -r --arg sport "$sport" --arg id "$team_id" \
     '[.teams[] | select(.sport == $sport and .teamId == $id) | .teamName][0] // "Team"' <<<"$state")
   updated=$(jq -c --arg sport "$sport" --arg id "$team_id" \
-    '.teams |= map(select(.sport != $sport or .teamId != $id))' <<<"$state")
+    '.teams |= map(select(.sport != $sport or .teamId != $id))
+      | if .pinnedTeam != null and .pinnedTeam.sport == $sport and .pinnedTeam.teamId == $id
+        then .pinnedTeam = null else . end' <<<"$state")
   write_state "$updated"
   rm -f "$CACHE_DIR/${sport}-${team_id}.json"
   notify "Stopped following $name"
@@ -245,6 +261,51 @@ toggle_spoilers() {
   write_state "$updated"
   hidden=$(jq -r '.spoilersHidden' <<<"$updated")
   [[ $hidden == true ]] && notify "Scores hidden" || notify "Scores visible"
+}
+
+cycle_sort() {
+  local state updated mode
+  state=$(read_state)
+  updated=$(jq -c '.sortMode = (if .sortMode == "manual" then "next"
+    elif .sortMode == "next" then "league" else "manual" end)' <<<"$state")
+  write_state "$updated"
+  mode=$(jq -r '.sortMode' <<<"$updated")
+  notify "Sort: ${mode^}"
+}
+
+move_team() {
+  local sport="$1" team_id="$2" direction="$3" state updated
+  [[ $direction == -1 || $direction == 1 ]] || return 2
+  state=$(read_state)
+  [[ $(jq -r '.sortMode' <<<"$state") == manual ]] || return 1
+  updated=$(jq -c --arg sport "$sport" --arg id "$team_id" --argjson direction "$direction" '
+    ([.teams | to_entries[] | select(.value.sport == $sport and .value.teamId == $id) | .key][0]) as $from
+    | if $from == null then . else ($from + $direction) as $to
+      | if $to < 0 or $to >= (.teams | length) then .
+        else .teams[$from] as $team
+          | .teams[$from] = .teams[$to]
+          | .teams[$to] = $team
+        end
+      end
+  ' <<<"$state")
+  write_state "$updated"
+}
+
+toggle_pin() {
+  local sport="$1" team_id="$2" state updated name
+  state=$(read_state)
+  name=$(jq -r --arg sport "$sport" --arg id "$team_id" '
+    [.teams[] | select(.sport == $sport and .teamId == $id) | .teamName][0] // empty' <<<"$state")
+  [[ -n $name ]] || return 1
+  updated=$(jq -c --arg sport "$sport" --arg id "$team_id" '
+    if .pinnedTeam != null and .pinnedTeam.sport == $sport and .pinnedTeam.teamId == $id
+    then .pinnedTeam = null else .pinnedTeam = {sport:$sport,teamId:$id} end' <<<"$state")
+  write_state "$updated"
+  if [[ $(jq -r '.pinnedTeam == null' <<<"$updated") == true ]]; then
+    notify "Idle bar pin cleared"
+  else
+    notify "Pinned $name to the idle bar"
+  fi
 }
 
 team_detail() {
@@ -349,7 +410,7 @@ team_detail() {
 }
 
 detail() {
-  local no_cache=false live_only=false state spoilers count index team item key requested
+  local no_cache=false live_only=false state spoilers sort_mode pinned count index team item key requested
   local -a items=() live_keys=()
   local stale=false
   if [[ ${1:-} == "--no-cache" ]]; then
@@ -361,6 +422,8 @@ detail() {
   fi
   state=$(read_state)
   spoilers=$(jq -r '.spoilersHidden' <<<"$state")
+  sort_mode=$(jq -r '.sortMode' <<<"$state")
+  pinned=$(jq -c '.pinnedTeam' <<<"$state")
   count=$(jq '.teams | length' <<<"$state")
   for ((index=0; index<count; index++)); do
     team=$(jq -c ".teams[$index]" <<<"$state")
@@ -377,9 +440,12 @@ detail() {
   done
   if ((${#items[@]})); then
     printf '%s\n' "${items[@]}" | jq -sc --argjson hidden "$spoilers" --argjson stale "$stale" \
+      --arg sortMode "$sort_mode" --argjson pinnedTeam "$pinned" \
       '. as $teams | {
         schemaVersion:1,
         spoilersHidden:$hidden,
+        sortMode:$sortMode,
+        pinnedTeam:$pinnedTeam,
         stale:$stale,
         teams:$teams,
         primary: (
@@ -389,8 +455,8 @@ detail() {
         )
       }'
   else
-    jq -cn --argjson hidden "$spoilers" \
-      '{schemaVersion:1,spoilersHidden:$hidden,stale:false,teams:[],primary:null}'
+    jq -cn --argjson hidden "$spoilers" --arg sortMode "$sort_mode" --argjson pinnedTeam "$pinned" \
+      '{schemaVersion:1,spoilersHidden:$hidden,sortMode:$sortMode,pinnedTeam:$pinnedTeam,stale:false,teams:[],primary:null}'
   fi
 }
 
@@ -481,11 +547,14 @@ case "${1:-}" in
   follow) follow_team "${2:?sport required}" "${3:?team id required}" ;;
   remove) remove_team "${2:?sport required}" "${3:?team id required}" ;;
   toggle-spoilers) toggle_spoilers ;;
+  cycle-sort) cycle_sort ;;
+  move) move_team "${2:?sport required}" "${3:?team id required}" "${4:?direction required}" ;;
+  toggle-pin) toggle_pin "${2:?sport required}" "${3:?team id required}" ;;
   detail) shift; detail "$@" ;;
   slate) full_slate "${2:-}" ;;
   state) read_state ;;
   *)
-    printf 'Usage: %s {add|search <query>|follow <sport> <team-id>|remove <sport> <team-id>|toggle-spoilers|detail [--no-cache|--live sport:id...]|slate [--no-cache]|state}\n' "$0" >&2
+    printf 'Usage: %s {add|search <query>|follow <sport> <team-id>|remove <sport> <team-id>|toggle-spoilers|cycle-sort|move <sport> <team-id> <-1|1>|toggle-pin <sport> <team-id>|detail [--no-cache|--live sport:id...]|slate [--no-cache]|state}\n' "$0" >&2
     exit 2
     ;;
 esac

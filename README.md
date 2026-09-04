@@ -20,6 +20,9 @@ The plugin ID is `io.github.chrisroundhill.omathlete`.
 - Click the bar widget to open or close it.
 - Press `/` or `a` to open native team search, then type any team name.
 - Press `j`/`k` on favorites or the arrow keys in search to move.
+- Press `o` on My Teams to cycle `Manual`, `Next Game`, and `League` sorting.
+- In Manual sorting, press `Shift+j`/`Shift+k` to reorder favorites.
+- Press `p` to pin the selected team to the idle bar. Live games still take priority.
 - Press Enter in search to follow the selected team.
 - Press Enter on a favorite to see its latest result and next three games.
 - In team details, press `o` to open the selected game on ESPN and `h` or
@@ -38,6 +41,10 @@ bars use a stable-width scoreboard label; vertical bars show the Omathlete
 scoreboard mark without text. While a game is live, only the affected teams are
 refreshed every 15 seconds. A changed score receives a brief, non-animated
 highlight unless spoiler mode is enabled.
+
+Sorting changes only the current view. Manual order is retained when viewing
+teams by next game or league, and the selected sort mode, manual order, and idle
+bar pin persist across shell restarts.
 
 Omathlete currently supports NFL, NBA, WNBA, MLB, NHL, college football,
 men's college basketball, the Premier League, and MLS.

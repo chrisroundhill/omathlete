@@ -29,8 +29,26 @@ jq -e '
 ' <<<"$output" >/dev/null
 
 live_refresh=$("$repo_dir/bin/omathlete" detail --live nfl:3)
-jq -e '(.teams | length) == 9 and .teams[0].current.state == "in"' \
+jq -e '(.teams | length) == 9 and .teams[0].current.state == "in"
+  and .sortMode == "manual" and .pinnedTeam == null' \
   <<<"$live_refresh" >/dev/null
+
+"$repo_dir/bin/omathlete" cycle-sort
+jq -e '.sortMode == "next"' < <("$repo_dir/bin/omathlete" state) >/dev/null
+"$repo_dir/bin/omathlete" cycle-sort
+jq -e '.sortMode == "league"' < <("$repo_dir/bin/omathlete" state) >/dev/null
+"$repo_dir/bin/omathlete" cycle-sort
+
+"$repo_dir/bin/omathlete" move nfl 3 1
+jq -e '.sortMode == "manual" and .teams[0].sport == "nba" and .teams[1].sport == "nfl"' \
+  < <("$repo_dir/bin/omathlete" state) >/dev/null
+"$repo_dir/bin/omathlete" move nfl 3 -1
+
+"$repo_dir/bin/omathlete" toggle-pin nfl 3
+jq -e '.pinnedTeam == {sport:"nfl",teamId:"3"}' \
+  < <("$repo_dir/bin/omathlete" state) >/dev/null
+"$repo_dir/bin/omathlete" toggle-pin nfl 3
+jq -e '.pinnedTeam == null' < <("$repo_dir/bin/omathlete" state) >/dev/null
 
 offline=$(OMATHLETE_FIXTURE_FAILURE=1 "$repo_dir/bin/omathlete" detail --no-cache)
 jq -e '.stale == true and (.teams | length) == 9 and all(.teams[]; .stale == true)' \
