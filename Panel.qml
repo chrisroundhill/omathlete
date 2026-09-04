@@ -156,9 +156,11 @@ Panel {
     var primary = parsedTeamColor(team ? team.teamColor : "")
     var alternate = parsedTeamColor(team ? team.teamAlternateColor : "")
     var surface = Color.background
-    if (primary && contrastRatio(primary, surface) >= 2.4) return primary
-    if (alternate && contrastRatio(alternate, surface) >= 2.4) return alternate
-    return Color.accent
+    var minimumTextContrast = 4.5
+    if (primary && contrastRatio(primary, surface) >= minimumTextContrast) return primary
+    if (alternate && contrastRatio(alternate, surface) >= minimumTextContrast) return alternate
+    if (contrastRatio(Color.accent, surface) >= minimumTextContrast) return Color.accent
+    return Color.foreground
   }
 
   function open() {

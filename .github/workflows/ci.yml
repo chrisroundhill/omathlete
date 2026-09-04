@@ -1,0 +1,40 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install test dependencies
+        run: sudo apt-get update && sudo apt-get install --yes jq
+
+      - name: Check shell syntax
+        run: bash -n bin/omathlete tests/fixture-curl tests/provider-fixtures.sh tests/smoke.sh
+
+      - name: Check manifest contract
+        run: |
+          jq -e '
+            .schemaVersion == 1
+            and (.id | test("^[A-Za-z0-9][A-Za-z0-9._-]*$"))
+            and (.name | type == "string" and length > 0)
+            and (.version | type == "string" and length > 0 and length <= 64)
+            and (.author | type == "string" and length > 0)
+            and (.description | type == "string" and length > 0)
+            and (.kinds | index("bar-widget") != null)
+            and .entryPoints.barWidget == "BarWidget.qml"
+          ' manifest.json
+
+      - name: Run deterministic provider tests
+        run: tests/provider-fixtures.sh

@@ -18,7 +18,7 @@ The plugin ID is `io.github.chrisroundhill.omathlete`.
 ## Use
 
 - Click the bar widget to open or close it.
-- Press `/` or `a` to open native team search, then type any team name.
+- Press `/` to open native team search, then type any team name.
 - Press `j`/`k` on favorites or the arrow keys in search to move.
 - Press `o` on My Teams to cycle `Manual`, `Next Game`, and `League` sorting.
 - In Manual sorting, press `Shift+j`/`Shift+k` to reorder favorites.
