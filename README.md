@@ -15,6 +15,22 @@ omarchy plugin add https://github.com/chrisroundhill/omathlete.git --enable
 
 The plugin ID is `io.github.chrisroundhill.omathlete`.
 
+## Remove
+
+Disable and remove the plugin with:
+
+```sh
+omarchy plugin remove io.github.chrisroundhill.omathlete
+```
+
+Removal leaves your preferences and short-lived cache in place so reinstalling
+does not discard your followed teams. To remove that data as well, delete:
+
+```text
+~/.local/state/omarchy/settings/omathlete.json
+~/.cache/omarchy/omathlete/
+```
+
 ## Use
 
 - Click the bar widget to open or close it.
