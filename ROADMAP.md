@@ -23,8 +23,7 @@ basketball, Premier League, and MLS.
 
 ## Next slices
 
-1. Accessibility verification.
-2. Optional game context such as venue and team records.
+1. Real-desktop accessibility checks across user themes and bar layouts.
 
 ## Completed slices
 
@@ -40,6 +39,9 @@ basketball, Premier League, and MLS.
 - Local-date agenda with deduplicated matchups and Today/Tomorrow/Weekend/Seven Days views.
 - Persistent watch-later protection and temporary per-game result reveal.
 - Opt-in pregame reminders, quiet hours, and persistent delivery deduplication.
+- Planner keyboard focus, shortcut help, wrapped names, and long-queue regression checks.
+- Optional venue and team records with spoiler-safe display.
+- Team-specific retries, missing-data explanations, and privacy-safe diagnostic summaries.
 
 ## Deliberately deferred
 

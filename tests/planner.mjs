@@ -96,5 +96,33 @@ try {
   assert.equal(detail.teams[0].agenda.length,2,'Provider normalization exposes the agenda window separately from detail rows');
   assert.ok(detail.teams[0].agenda.every(game => game.homeTeam && game.awayTeam && game.id));
   assert.ok(detail.teams[0].schedule.length <= 5);
+  assert.equal(detail.teams[0].schedule[0].venue,'Fixture Stadium');
+  assert.equal(detail.teams[0].schedule[0].teamRecord,'10-5');
+  const context = {...game,venue:'Fixture Stadium',teamRecord:'10-5',opponentRecord:'8-7'};
+  assert.equal(logic.contrastingInk({r:1,g:1,b:1}),'#000000');
+  assert.equal(logic.contrastingInk({r:0,g:0,b:0}),'#ffffff');
+  assert.equal(logic.contrastingInk({r:1,g:0.667,b:0.267}),'#000000');
+  assert.match(logic.gameContext(context,false),/10-5/);
+  assert.ok(!logic.gameContext(context,true).includes('10-5'));
+  assert.match(logic.gameContext(context,true),/Home game.*Fixture Stadium/);
+  assert.match(logic.availability({loading:true}),/Loading/);
+  assert.match(logic.availability({stale:true,updatedAt:now}),/cached/);
+  assert.match(logic.availability({stale:true}),/validation failed/);
+  assert.match(logic.availability({schedule:[]}),/does not confirm an off-season/);
+  const diagnostic = logic.diagnosticSummary([{...team,stale:true,updatedAt:now-600,schedule:[game]}],now*1000);
+  assert.equal(JSON.parse(diagnostic).oldestCacheMinutes,10);
+  for (const secret of ['Chicago','CHC','401234','https:', 'teamScore']) assert.ok(!diagnostic.includes(secret));
+  for (const date of ['2026-09-05T23:59:59','2026-09-06T00:00:00','2026-03-08T12:00:00','2026-11-01T12:00:00']) {
+    const time = new Date(date).getTime();
+    const today = logic.agendaRange(0,time), tomorrow = logic.agendaRange(1,time);
+    assert.equal(today[1],tomorrow[0]);
+    assert.equal(new Date(today[0]).getHours(),0);
+    assert.ok(time >= today[0] && time < today[1]);
+    const boundaryTeam = {...team,agenda:[{...game,id:'start',date:new Date(today[0]).toISOString()},
+      {...game,id:'end',date:new Date(today[1]).toISOString()}]};
+    const selected = logic.plannerRows([boundaryTeam],initial,0,false,time);
+    assert.equal(selected.length,1);
+    assert.equal(selected[0].id,'start','Agenda includes midnight start but excludes the next midnight');
+  }
   console.log('Omathlete planner and reminder tests passed.');
 } finally { fs.rmSync(tmp,{recursive:true,force:true}); }

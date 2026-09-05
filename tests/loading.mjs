@@ -30,6 +30,11 @@ try {
   fs.mkdirSync(path.dirname(statePath), {recursive: true});
   state(['mlb', 'nba']);
   run(['detail', '--no-cache']);
+  const targetKey = 'mlb:' + fixtureTeams.find(team => team.sport === 'mlb').teamId;
+  const targeted = run(['detail-stream','--team',targetKey]).trim().split('\n').map(JSON.parse);
+  assert.equal(targeted[0].teams.length,1);
+  assert.equal(targeted.filter(message => message.type === 'team').length,1);
+  assert.equal(targeted[1].team.sport,'mlb');
   const messages = [];
   const started = performance.now();
   let buffer = '', bytes = 0, errors = '';

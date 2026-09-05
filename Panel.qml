@@ -23,6 +23,7 @@ Panel {
   property bool forceRefreshPending: false
   property bool busy: false
   property string errorMessage: ""
+  property bool diagnosticsOpen: false
   property int selectedIndex: 0
   property bool searchOpen: false
   property bool searchBusy: false
@@ -358,6 +359,14 @@ Panel {
       command.push(liveTeams[i].sport + ":" + liveTeams[i].teamId)
     busy = true
     detailProcess.command = command
+    detailProcess.running = true
+  }
+
+  function retryTeam() {
+    if (!detailTeam || detailProcess.running) return
+    busy = true
+    errorMessage = ""
+    detailProcess.command = [root.backend, "detail-stream", "--team", Logic.teamKey(detailTeam)]
     detailProcess.running = true
   }
 
@@ -808,7 +817,10 @@ Panel {
             root.toggleSpoilers()
             event.accepted = true
           } else if (event.key === Qt.Key_R) {
-            root.refresh(true)
+            root.retryTeam()
+            event.accepted = true
+          } else if (event.key === Qt.Key_D) {
+            root.diagnosticsOpen = !root.diagnosticsOpen
             event.accepted = true
           }
         } else if ((event.modifiers & Qt.ShiftModifier)
@@ -1159,6 +1171,7 @@ Panel {
               textFormat: Text.PlainText
               wrapMode: Text.WordWrap
               color: Color.urgent
+              font.family: root.bar ? root.bar.fontFamily : Style.font.family
               font.pixelSize: Style.font.caption
             }
 
@@ -1270,6 +1283,7 @@ Panel {
               visible: text !== ""
               color: root.detailTeam && root.detailTeam.stale ? Color.urgent : root.barForeground
               wrapMode: Text.WordWrap
+              font.family: root.bar ? root.bar.fontFamily : Style.font.family
               font.pixelSize: Style.font.caption
             }
 
@@ -1284,6 +1298,30 @@ Panel {
               font.pixelSize: Style.font.body
             }
 
+            Text {
+              width: parent.width
+              text: Logic.availability(root.detailTeam) + "\nr: retry this team · d: diagnostics"
+              font.family: root.bar ? root.bar.fontFamily : Style.font.family
+              textFormat: Text.PlainText
+              color: root.barForeground
+              wrapMode: Text.WordWrap
+              font.pixelSize: Style.font.caption
+              MouseArea { anchors.fill: parent; onClicked: root.diagnosticsOpen = !root.diagnosticsOpen }
+            }
+            TextEdit {
+              visible: root.diagnosticsOpen
+              width: parent.width
+              text: Logic.diagnosticSummary(root.teams, root.now)
+              font.family: root.bar ? root.bar.fontFamily : Style.font.family
+              textFormat: TextEdit.PlainText
+              readOnly: true
+              selectByMouse: true
+              activeFocusOnTab: visible
+              color: root.barForeground
+              font.pixelSize: Style.font.caption
+              wrapMode: TextEdit.Wrap
+              Accessible.name: "Diagnostic summary. Select all and copy to share. No scores or team identities included."
+            }
             Repeater {
               id: detailRepeater
               model: root.detailTeam && root.detailTeam.schedule ? root.detailTeam.schedule : []
@@ -1337,9 +1375,19 @@ Panel {
                         : " · " + Logic.statusText(modelData, root.gameHidden(modelData, root.detailTeam.sport))
                           + (modelData.broadcast ? " · " + modelData.broadcast : ""))
                     color: Qt.darker(root.barForeground, 1.25)
-                    elide: Text.ElideRight
+                    wrapMode: Text.WordWrap
                     font.family: root.bar ? root.bar.fontFamily : Style.font.family
                     font.pixelSize: Style.font.bodySmall
+                  }
+                  Text {
+                    width: parent.width
+                    text: Logic.gameContext(modelData, root.gameHidden(modelData, root.detailTeam.sport))
+                      + (!modelData.broadcast ? " · TV network not supplied by ESPN" : "")
+                    font.family: root.bar ? root.bar.fontFamily : Style.font.family
+                    textFormat: Text.PlainText
+                    color: root.barForeground
+                    wrapMode: Text.WordWrap
+                    font.pixelSize: Style.font.caption
                   }
                 }
 
@@ -1577,13 +1625,13 @@ Panel {
           anchors.rightMargin: Style.space(14)
           anchors.verticalCenter: parent.verticalCenter
           text: root.plannerOpen
-            ? "1–4 dates   tab agenda/queue   j/k move   w watch/remove   b bell   v reveal   s spoilers   o ESPN   q quiet   r refresh   esc back"
+            ? "? shortcuts   tab focus   l agenda/queue   j/k move   w watch/remove   b bell   v reveal   esc back"
             : root.searchOpen
             ? "↑/↓ move   enter follow   esc back"
             : root.fullSlateOpen
               ? "a my teams   j/k move   o open ESPN   s spoilers   r refresh"
               : root.teamDetailOpen
-                ? "j/k move   o open ESPN   w watch later   b bell   s spoilers   r refresh   h/esc back"
+                ? "j/k move   o open ESPN   w watch later   b bell   s spoilers   r retry team   d diagnostics   h/esc back"
                 : "/ search   a slate   j/k move   o sort   p pin   enter details"
                   + (root.sortMode === "manual" ? "   shift+j/k reorder" : "")
                   + "   x remove   s spoilers   g agenda   l watch later"

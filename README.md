@@ -81,10 +81,13 @@ Refreshes preserve the selected team/game and its position in the viewport.
 ## Agenda, watch later, and reminders
 
 The agenda shows followed teams' games for Today, Tomorrow, Weekend
-(Saturday–Sunday), or Seven Days. Press `1`–`4` to select a period and Tab
+(Saturday–Sunday), or Seven Days. Press `1`–`4` to select a period and `l`
 to switch between the agenda and watch-later queue. Dates use your local
 timezone. A matchup between two followed teams appears once. Coverage depends
 on ESPN's available schedules; the agenda is capped at 32 games per team.
+Press `?` or F1 for planner shortcut help. Tab/Shift+Tab focus buttons;
+Enter/Space activate them. `j`/`k` move between games and keep the selection
+visible, including in long queues. Team names and broadcast information wrap.
 
 Press `w` on an agenda or team-detail game to save it for later. Its scores and revealing
 status descriptions stay hidden throughout the widget, including the bar,
@@ -104,6 +107,23 @@ cached schedules. Delivery is deduplicated across shell restarts. Reminders
 missed by more than two minutes are skipped, so resuming the desktop does not
 produce a backlog. Removing a followed team stops its cache refreshes and may
 prevent its saved reminders from being delivered.
+
+### Game context and troubleshooting
+
+Team details include home/away location, venue, and overall team/opponent records
+when ESPN supplies them. Records are hidden whenever that game's result is
+protected, including saved watch-later games. Missing TV information means ESPN
+did not supply a network; it does not mean the game is untelevised.
+
+Team View distinguishes loading, cached fallback, unavailable data, and a
+successful response with no upcoming fixtures. An empty schedule is not proof
+that a team is out of season. Press `r` there to refresh only that team.
+If a refresh is already running, wait for it to finish before retrying.
+
+Press `d` in Team View to show a diagnostic summary. Select its text and copy
+with Ctrl+C (Tab focuses the field; Ctrl+A selects all). It contains only
+provider identity, aggregate loading/cache counts, and cache age—not favorite
+team identities, scores, URLs, local paths, or raw provider responses.
 
 Sorting changes only the current view. Manual order is retained when viewing
 teams by next game or league, and the selected sort mode, manual order, and idle

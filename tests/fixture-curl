@@ -100,6 +100,8 @@ jq -cn --argjson team "$team" --arg url "$url" '
       }
     ]
   }
+  | .events[].competitions[0].venue = {fullName:"Fixture Stadium"}
+  | .events[].competitions[0].competitors[].records = [{type:"total",summary:"10-5"}]
   | if ($team.sport == "epl" or $team.sport == "mls")
       and (env.OMATHLETE_FIXTURE_SOCCER_PAST_ONLY // "0") == "1"
       and ($url | contains("/teams/"))

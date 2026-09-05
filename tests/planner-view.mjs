@@ -10,7 +10,7 @@ try {
     'import "Theme.js" as Style\nimport "Colors.js" as Color'));
   fs.copyFileSync(new URL('../PanelLogic.js',import.meta.url),path.join(tmp,'PanelLogic.js'));
   fs.writeFileSync(path.join(tmp,'Theme.js'),'var font={family:"sans-serif",caption:12,body:14,subtitle:16}; var cornerRadius=2; function space(n){return n;}');
-  fs.writeFileSync(path.join(tmp,'Colors.js'),'var foreground="#ffffff"; var background="#101010"; var accent="#ffaa44"; var urgent="#ff8888";');
+  fs.writeFileSync(path.join(tmp,'Colors.js'),'var foreground="#ffffff"; var background="#101010"; var accent=Qt.rgba(1,0.667,0.267,1); var urgent="#ff8888";');
   fs.writeFileSync(path.join(tmp,'tst_planner.qml'),`
 import QtQuick
 import QtTest
@@ -55,6 +55,37 @@ Item {
       keyClick(Qt.Key_Escape)
       compare(backSpy.count,1)
       compare(p.width,240)
+      keyClick(Qt.Key_Question)
+      compare(p.helpOpen,true)
+      keyClick(Qt.Key_Question)
+      compare(p.helpOpen,false)
+      keyClick(Qt.Key_Tab)
+      keyClick(Qt.Key_Return)
+      compare(p.helpOpen,true,"Tab reaches an actionable button")
+      p.helpOpen = false
+      var many = []
+      for(var n=0;n<32;n++) many.push({id:String(n),sport:"mlb",
+        homeTeam:"A very long university team name",awayTeam:"Another very long team name",
+        date:"2026-09-05T19:00:00Z",day:"Sat · Sep 5",state:"post",detail:"Final 88-99",
+        homeScore:"99",awayScore:"88",broadcast:"A long broadcast network name",saved:true,reminder:"Off"})
+      p.rows = many
+      wait(50)
+      p.forceActiveFocus()
+      for(var n=0;n<35;n++) keyClick(Qt.Key_J)
+      wait(50)
+      compare(p.selectedIndex,31)
+      var list = findChild(p,"plannerGames")
+      verify(list.contentY > 0,"Keyboard selection scrolls long queues")
+      verify(list.currentItem.y >= list.contentY - 1)
+      verify(list.currentItem.y + list.currentItem.height <= list.contentY + list.height + 1)
+      verify(texts(p).indexOf("88–99") < 0)
+      verify(texts(p).indexOf("Final 88-99") < 0)
+      for(var n=0;n<35;n++) keyClick(Qt.Key_K)
+      compare(p.selectedIndex,0)
+      p.rows = []
+      wait(30)
+      keyClick(Qt.Key_J)
+      compare(p.selectedIndex,0,"Empty list selection never becomes negative")
     }
   }
 }

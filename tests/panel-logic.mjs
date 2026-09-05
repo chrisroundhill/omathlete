@@ -3,6 +3,15 @@ import fs from 'node:fs';
 import vm from 'node:vm';
 
 const logic = vm.createContext({});
+// Text is not a Controls label: QtQuick does not inherit the theme font.
+for (const file of ['Panel.qml', 'PlannerView.qml']) {
+  const source = fs.readFileSync(new URL('../' + file, import.meta.url), 'utf8');
+  for (const match of source.matchAll(/^([ \t]*)(?:section\.delegate: )?(?:Text|TextEdit|TextInput)\s*\{/gm)) {
+    const end = source.indexOf('\n' + match[1] + '}', match.index);
+    const ownProperties = source.slice(match.index, end);
+    assert.match(ownProperties, /font\.family:/, `${file}: text must explicitly use the theme font`);
+  }
+}
 vm.runInContext(fs.readFileSync(new URL('../PanelLogic.js', import.meta.url), 'utf8'), logic);
 const now = Date.parse('2026-09-05T18:00:00Z');
 const team = {sport: 'mlb', teamId: '16', teamAbbrev: 'CHC',

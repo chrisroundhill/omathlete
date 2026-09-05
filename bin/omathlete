@@ -510,6 +510,9 @@ team_detail() {
           state: (($event.competitions[0].status.type.state // "pre") | text(12)),
           detail: (($event.competitions[0].status.type.shortDetail // "Scheduled") | text(120)),
           isHome: $isHome,
+          venue: (($event.competitions[0].venue.fullName // "") | text(120)),
+          teamRecord: (([$mine.records[]? | select(.type == "total" or .name == "overall") | .summary][0] // "") | text(40)),
+          opponentRecord: (([$other.records[]? | select(.type == "total" or .name == "overall") | .summary][0] // "") | text(40)),
           opponent: (($other.team.abbreviation // $other.team.displayName // "TBD") | text(40)),
           teamScore: (if ($mine.score | type) == "object"
             then (($mine.score.displayValue // "0") | text(20)) else (($mine.score // "0") | text(20)) end),
@@ -659,6 +662,10 @@ detail_stream() (
   [[ ${1:-} == --no-cache ]] && force=true
   if [[ ${1:-} == --live ]]; then shift; live_keys=("$@"); fi
   state=$(read_state)
+  if [[ ${1:-} == --team ]]; then
+    state=$(jq -c --arg key "${2:-}" '.teams |= map(select((.sport + ":" + .teamId) == $key))' <<<"$state")
+    force=true
+  fi
   work=$(mktemp -d "$CACHE_DIR/.stream.XXXXXX") || exit 1
   trap 'if ((${#jobs[@]})); then kill "${!jobs[@]}" 2>/dev/null || true; wait "${!jobs[@]}" 2>/dev/null || true; fi; rm -rf "$work"' EXIT
   mapfile -t teams < <(jq -c '.teams[]' <<<"$state")

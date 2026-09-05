@@ -14,6 +14,7 @@ Item {
   property string revealedKey: ""
   property bool reconciling: false
   property string warning: ""
+  property bool helpOpen: false
   signal chooseRange(int value)
   signal chooseQueue(bool value)
   signal watchGame(var game)
@@ -46,11 +47,16 @@ Item {
     selectedIndex = Logic.selectedGameIndex(rows, selectedKey, selectedIndex)
     selectedKey = Logic.gameKey(selectedGame())
     if (revealedKey !== selectedKey) revealedKey = ""
-    Qt.callLater(function() { gameList.contentY = oldY; gameList.returnToBounds(); root.reconciling = false })
+    Qt.callLater(function() {
+      gameList.contentY = oldY; gameList.returnToBounds()
+      gameList.positionViewAtIndex(root.selectedIndex, ListView.Contain)
+      root.reconciling = false
+    })
   }
   Keys.onPressed: function(event) {
     var game = selectedGame()
-    if (event.key === Qt.Key_J || event.key === Qt.Key_Down) selectedIndex = Math.min(rows.length - 1, selectedIndex + 1)
+    if (event.key === Qt.Key_Question || event.key === Qt.Key_F1) helpOpen = !helpOpen
+    else if (event.key === Qt.Key_J || event.key === Qt.Key_Down) { root.forceActiveFocus(); selectedIndex = Math.max(0, Math.min(rows.length - 1, selectedIndex + 1)) }
     else if (event.key === Qt.Key_K || event.key === Qt.Key_Up) selectedIndex = Math.max(0, selectedIndex - 1)
     else if (event.key === Qt.Key_W && game) root.watchGame(game)
     else if (event.key === Qt.Key_B && game) root.remindGame(game)
@@ -59,7 +65,7 @@ Item {
     else if (event.key === Qt.Key_Q) root.quietToggle()
     else if (event.key === Qt.Key_R) root.refresh()
     else if (event.key === Qt.Key_S) root.spoilersToggle()
-    else if (event.key === Qt.Key_Tab) root.chooseQueue(!watchLater)
+    else if (event.key === Qt.Key_L) root.chooseQueue(!watchLater)
     else if (event.key >= Qt.Key_1 && event.key <= Qt.Key_4) root.chooseRange(event.key - Qt.Key_1)
     else if (event.key === Qt.Key_Escape || event.key === Qt.Key_H) root.back()
     else return
@@ -69,7 +75,21 @@ Item {
   component Action: Rectangle {
     property string label: ""
     property bool active: false
+    property int rowIndex: -1
     signal clicked()
+    activeFocusOnTab: visible
+    Accessible.role: Accessible.Button
+    Accessible.name: label
+    Accessible.onPressAction: clicked()
+    border.width: activeFocus ? 2 : 0
+    border.color: Color.foreground
+    Keys.onReturnPressed: clicked()
+    Keys.onEnterPressed: clicked()
+    Keys.onSpacePressed: clicked()
+    onActiveFocusChanged: if (activeFocus && rowIndex >= 0) {
+      root.selectedIndex = rowIndex
+      gameList.positionViewAtIndex(rowIndex, ListView.Contain)
+    }
     height: Style.space(30)
     color: active ? Color.accent : Qt.rgba(1, 1, 1, 0.08)
     radius: Style.cornerRadius
@@ -78,14 +98,18 @@ Item {
       anchors.margins: Style.space(4)
       text: parent.label
       textFormat: Text.PlainText
-      color: parent.active ? Color.background : Color.foreground
+      color: parent.active ? Logic.contrastingInk(Color.accent) : Color.foreground
       font.pixelSize: Style.font.caption
       font.family: Style.font.family
       horizontalAlignment: Text.AlignHCenter
       verticalAlignment: Text.AlignVCenter
       elide: Text.ElideRight
     }
-    MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: parent.clicked() }
+    MouseArea {
+      anchors.fill: parent
+      cursorShape: Qt.PointingHandCursor
+      onClicked: { parent.forceActiveFocus(); parent.clicked() }
+    }
   }
 
   Column {
@@ -102,6 +126,20 @@ Item {
       font.bold: true
       width: parent.width
       wrapMode: Text.WordWrap
+    }
+    Action {
+      width: parent.width
+      label: root.helpOpen ? "Close shortcuts (?)" : "Keyboard shortcuts (?)"
+      onClicked: root.helpOpen = !root.helpOpen
+    }
+    Text {
+      visible: root.helpOpen
+      font.family: Style.font.family
+      width: parent.width
+      text: "Tab/Shift+Tab: focus controls; Enter/Space: activate. j/k: games; 1–4: dates; l: agenda/queue; w: save/remove; b: reminder; v: reveal; o: ESPN; q: quiet hours; s: spoilers; r: refresh; Esc: back."
+      color: Color.foreground
+      wrapMode: Text.WordWrap
+      font.pixelSize: Style.font.caption
     }
     Row {
       width: parent.width
@@ -141,6 +179,7 @@ Item {
   }
   ListView {
     id: gameList
+    objectName: "plannerGames"
     anchors.top: header.bottom
     anchors.topMargin: Style.space(8)
     anchors.bottom: parent.bottom
@@ -165,6 +204,7 @@ Item {
       anchors.top: parent.top
       width: parent.width
       visible: root.rows.length === 0
+      font.family: Style.font.family
       text: root.watchLater ? "No saved games. Press w on an agenda game to protect its result."
         : "No games found for this period. Schedules may still be loading or unavailable."
       color: Color.foreground
@@ -184,7 +224,7 @@ Item {
       radius: Style.cornerRadius
       MouseArea {
         anchors.fill: parent
-        onClicked: root.selectedIndex = card.index
+        onClicked: { root.forceActiveFocus(); root.selectedIndex = card.index }
       }
       Column {
         id: details
@@ -201,12 +241,13 @@ Item {
           font.family: Style.font.family
           font.pixelSize: Style.font.body
           font.bold: true
-          elide: Text.ElideRight
+          wrapMode: Text.Wrap
         }
         Text {
           width: parent.width
           text: new Date(card.modelData.date).toLocaleTimeString(Qt.locale(), "h:mm AP")
-            + (card.modelData.broadcast ? " · " + card.modelData.broadcast : "")
+            + " · " + (card.modelData.broadcast || "TV not supplied")
+          font.family: Style.font.family
           textFormat: Text.PlainText
           color: Color.foreground
           font.pixelSize: Style.font.caption
@@ -218,6 +259,7 @@ Item {
             : Logic.statusText(card.modelData, false)
               + (card.modelData.state !== "pre" && card.modelData.awayScore !== undefined
                 ? " · " + card.modelData.awayScore + "–" + card.modelData.homeScore : "")
+          font.family: Style.font.family
           textFormat: Text.PlainText
           color: Color.foreground
           font.pixelSize: Style.font.caption
@@ -228,11 +270,13 @@ Item {
           spacing: Style.space(4)
           Action {
             width: (parent.width - parent.spacing) / 2
+            rowIndex: card.index
             label: card.modelData.saved ? "Watched / remove" : "Watch later"
             onClicked: { root.selectedIndex = card.index; root.watchGame(card.modelData) }
           }
           Action {
             width: (parent.width - parent.spacing) / 2
+            rowIndex: card.index
             label: "Bell: " + card.modelData.reminder
             onClicked: { root.selectedIndex = card.index; root.remindGame(card.modelData) }
           }
@@ -242,12 +286,14 @@ Item {
           spacing: Style.space(4)
           Action {
             width: (parent.width - parent.spacing) / 2
+            rowIndex: card.index
             label: card.hiddenResult ? "Reveal this result" : "Hide result"
             visible: root.isHidden(card.modelData)
             onClicked: { root.selectedIndex = card.index; root.reveal() }
           }
           Action {
             width: (parent.width - parent.spacing) / 2
+            rowIndex: card.index
             label: "Open ESPN"
             onClicked: root.launch(card.modelData)
           }

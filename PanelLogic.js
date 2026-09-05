@@ -1,4 +1,10 @@
 // Shared by the panel and deterministic interaction tests. Times are milliseconds.
+function contrastingInk(color) {
+  function linear(v) { return v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4); }
+  var luminance = 0.2126 * linear(color.r) + 0.7152 * linear(color.g) + 0.0722 * linear(color.b);
+  return luminance > 0.179 ? "#000000" : "#ffffff";
+}
+
 function refreshInterval(teams, opened, now) {
   if (opened) return 60000;
   for (var i = 0; i < teams.length; i++) {
@@ -58,6 +64,36 @@ function freshness(item, now) {
   var age = minutes < 1 ? "just now" : minutes < 60 ? minutes + "m ago"
     : minutes < 1440 ? Math.floor(minutes / 60) + "h ago" : Math.floor(minutes / 1440) + "d ago";
   return (item.stale ? "Cached · updated " : "Updated ") + age;
+}
+
+function availability(team) {
+  if (!team) return "No team selected.";
+  if (team.loading) return "Loading schedule…";
+  if (team.stale) return team.updatedAt
+    ? "Provider refresh failed; showing cached games. Retry this team with r."
+    : "Schedule unavailable: provider request or response validation failed. Retry with r.";
+  if (!(team.schedule || []).length) return "Provider returned no recent or upcoming games. This does not confirm an off-season.";
+  if (!team.upcoming) return "No upcoming fixture returned by the provider. Try refreshing this team.";
+  return "Schedule loaded. Broadcasts and game context depend on provider coverage.";
+}
+
+function gameContext(game, hidden) {
+  var parts = [game.isHome ? "Home game" : "Away game"];
+  if (game.venue) parts.push(game.venue);
+  if (!hidden && (game.teamRecord || game.opponentRecord))
+    parts.push("Records: " + (game.teamRecord || "unavailable") + " / " + (game.opponentRecord || "unavailable"));
+  return parts.join(" · ");
+}
+
+// Deliberately omit favorites, scores, URLs, local paths and raw provider errors.
+function diagnosticSummary(teams, now) {
+  return JSON.stringify({component:"Omathlete",provider:"ESPN",teams:teams.length,
+    loading:teams.filter(function(t){return !!t.loading}).length,
+    stale:teams.filter(function(t){return !!t.stale}).length,
+    unavailable:teams.filter(function(t){return !t.updatedAt}).length,
+    noUpcoming:teams.filter(function(t){return !t.upcoming}).length,
+    oldestCacheMinutes:teams.reduce(function(age,t){return t.updatedAt
+      ? Math.max(age, Math.max(0, Math.floor((now / 1000 - t.updatedAt) / 60))) : age},0)}, null, 2);
 }
 
 function preferences(state) {
