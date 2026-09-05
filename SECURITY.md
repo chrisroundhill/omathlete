@@ -30,6 +30,12 @@ one cached snapshot, up to 12 team updates, and completion. Each message is
 limited to 1 MiB and the entire stream to 2 MiB. Full Slate fetches at most
 three leagues concurrently; existing response, cache, and output limits apply.
 
+Planner state stores at most 32 watch-later entries and 32 reminder entries,
+using validated matchup metadata rather than saved scores. Preferences are
+limited to 256 KiB before parsing. The reminder deduplication ledger is capped
+at 128 entries and 32 KiB on read. Reminder checking uses local caches and the
+desktop notification command; it adds no daemon, account, or external service.
+
 ESPN's site API is undocumented and may change. Team and league names and logos
 remain the property of their respective owners; their inclusion does not imply
 affiliation or endorsement.

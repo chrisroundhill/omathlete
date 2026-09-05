@@ -105,6 +105,10 @@ jq -cn --argjson team "$team" --arg url "$url" '
       and ($url | contains("/teams/"))
     then .events |= map(select(.competitions[0].status.type.state == "post"))
     else . end
+  | if (env.OMATHLETE_FIXTURE_CURRENT_DATES // "0") == "1" then
+      .events[0].date = ((now - 3600) | strftime("%Y-%m-%dT%H:%M:%SZ"))
+      | .events[1].date = ((now + 3600) | strftime("%Y-%m-%dT%H:%M:%SZ"))
+    else . end
   | if (env.OMATHLETE_FIXTURE_EMPTY_EVENTS // "0") == "1" then .events = [] else . end
   | if ($url | contains("/scoreboard"))
     then .events[].competitions[0].competitors[].score |= .displayValue

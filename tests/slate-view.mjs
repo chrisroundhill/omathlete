@@ -48,6 +48,7 @@ Item {
   property var slateGames: []
   function cancelViewportRestore() {}
   function openSlateGame() {}
+  function gameHidden(game, sport) { return spoilersHidden }
   Item { id: scoreFlick; height: root.height }
   Item { id: slateContainer; y: 0 }
   ${view}

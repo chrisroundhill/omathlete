@@ -37,12 +37,15 @@ basketball, Premier League, and MLS.
 - Atomic game caches, partial-catalog recovery, and per-team data age.
 - Cached-first incremental favorites, bounded parallel slates, and virtualized slate rows.
 - Selection and viewport preservation across provider updates and automatic sorting.
+- Local-date agenda with deduplicated matchups and Today/Tomorrow/Weekend/Seven Days views.
+- Persistent watch-later protection and temporary per-game result reveal.
+- Opt-in pregame reminders, quiet hours, and persistent delivery deduplication.
 
 ## Deliberately deferred
 
 - Following entire leagues
-- Standings and calendar views
-- Notifications
+- Standings and calendar export
+- Score notifications and reminders while the shell is not running
 - Play-by-play and betting lines
 - Additional providers and non-team sports
 - Account sync

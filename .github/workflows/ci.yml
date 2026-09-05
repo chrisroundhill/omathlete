@@ -27,7 +27,7 @@ jobs:
             qml6-module-qtqml-workerscript qml6-module-qttest
 
       - name: Check shell syntax
-        run: bash -n bin/omathlete tests/fixture-curl tests/provider-fixtures.sh tests/reliability.sh tests/smoke.sh
+        run: bash -n bin/omathlete bin/planner.sh tests/fixture-curl tests/provider-fixtures.sh tests/reliability.sh tests/smoke.sh
 
       - name: Check manifest contract
         run: |
@@ -56,3 +56,8 @@ jobs:
 
       - name: Check virtualized slate rendering
         run: node tests/slate-view.mjs
+
+      - name: Check agenda, watch later, and reminders
+        run: |
+          node tests/planner.mjs
+          node tests/planner-view.mjs

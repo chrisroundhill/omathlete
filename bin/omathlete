@@ -23,6 +23,7 @@ readonly MAX_SLATE_GAMES_PER_LEAGUE=100
 readonly MAX_SLATE_GAMES=500
 readonly ESPN_ROOT="https://site.api.espn.com/apis/site/v2/sports"
 readonly CATALOG_FILE="$CACHE_DIR/teams.json"
+readonly SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 CURL_BIN="/usr/bin/curl"
 if [[ ${OMATHLETE_TESTING:-0} == 1 && -n ${OMATHLETE_CURL_BIN:-} ]]; then
   CURL_BIN="$OMATHLETE_CURL_BIN"
@@ -40,7 +41,7 @@ ensure_storage() {
 
 read_state() {
   ensure_storage
-  if ! jq -e '
+  if [[ $(stat -c %s "$STATE_FILE") -gt 262144 ]] || ! jq -e '
       .schemaVersion == 1
       and (.spoilersHidden | type) == "boolean"
       and ((.sortMode // "manual") | test("^(manual|next|league)$"))
@@ -61,14 +62,15 @@ read_state() {
     printf '%s\n' '{"schemaVersion":1,"spoilersHidden":false,"sortMode":"manual","pinnedTeam":null,"teams":[]}'
     return
   fi
-  jq -c '
+  jq -c -L "$SCRIPT_DIR" 'include "planner";
     .teams = .teams[:12]
     | .sortMode = (if (.sortMode // "manual") | test("^(manual|next|league)$")
         then (.sortMode // "manual") else "manual" end)
     | .pinnedTeam = ((.pinnedTeam // null) as $pin
         | if $pin != null and any(.teams[]; .sport == $pin.sport and .teamId == $pin.teamId)
           then {sport:$pin.sport,teamId:$pin.teamId} else null end)
-    | {schemaVersion,spoilersHidden,sortMode,pinnedTeam,teams}
+    | planner_state
+    | {schemaVersion,spoilersHidden,sortMode,pinnedTeam,teams,watchLater,reminders,quietHours}
   ' "$STATE_FILE"
 }
 
@@ -503,6 +505,8 @@ team_detail() {
         (if $isHome then $away else $home end) as $other |
         {
           id: (($event.id // "") | text(64)),
+          homeTeam: (($home.team.abbreviation // $home.team.displayName // "TBD") | text(40)),
+          awayTeam: (($away.team.abbreviation // $away.team.displayName // "TBD") | text(40)),
           state: (($event.competitions[0].status.type.state // "pre") | text(12)),
           detail: (($event.competitions[0].status.type.shortDetail // "Scheduled") | text(120)),
           isHome: $isHome,
@@ -550,6 +554,8 @@ team_detail() {
           else (($next.date | epoch) | strflocaltime("%a")) end)
         }) else null end),
         schedule:$schedule,
+        agenda: ([$events[] | select((.date | epoch) >= ($now - 86400)
+          and (.date | epoch) <= ($now + 8 * 86400))] | sort_by(.date) | .[:32] | map(view(.))),
         stale:false, updatedAt:$now
       }
     ' <<<"$payload" 2>/dev/null | bounded_output "$MAX_TEAM_CACHE_BYTES") \
@@ -802,8 +808,9 @@ full_slate() (
 )
 
 # Serialize read/modify/write preferences even when separate plugin processes overlap.
+source "$SCRIPT_DIR/planner.sh"
 case "${1:-}" in
-  add|follow|remove|toggle-spoilers|cycle-sort|move|toggle-pin)
+  add|follow|remove|toggle-spoilers|cycle-sort|move|toggle-pin|watch-game|remind-game|toggle-quiet|check-reminders)
     ensure_storage
     exec 9>"$STATE_DIR/.omathlete.lock"
     /usr/bin/flock -w 30 9 || exit 1
@@ -823,14 +830,16 @@ case "${1:-}" in
   detail-stream) shift; detail_stream "$@" ;;
   slate) full_slate "${2:-}" ;;
   state) read_state ;;
+  watch-game|remind-game|toggle-quiet) planner_change "$@" ;;
+  check-reminders) check_reminders ;;
   *)
-    printf 'Usage: %s {add|search <query>|follow <sport> <team-id>|remove <sport> <team-id>|toggle-spoilers|cycle-sort|move <sport> <team-id> <-1|1>|toggle-pin <sport> <team-id>|detail [--no-cache|--live sport:id...]|detail-stream [--no-cache|--live sport:id...]|slate [--no-cache]|state}\n' "$0" >&2
+    printf 'Usage: %s {add|search <query>|follow <sport> <team-id>|remove <sport> <team-id>|toggle-spoilers|cycle-sort|move <sport> <team-id> <-1|1>|toggle-pin <sport> <team-id>|detail [--no-cache|--live sport:id...]|detail-stream [--no-cache|--live sport:id...]|slate [--no-cache]|watch-game <sport> <game-id>|remind-game <sport> <game-id>|toggle-quiet|check-reminders|state}\n' "$0" >&2
     exit 2
     ;;
 esac
 result=$?
 case "${1:-}" in
-  add|follow|remove|toggle-spoilers|cycle-sort|move|toggle-pin)
+  add|follow|remove|toggle-spoilers|cycle-sort|move|toggle-pin|watch-game|remind-game|toggle-quiet)
     (( result == 0 )) && read_state
     ;;
 esac

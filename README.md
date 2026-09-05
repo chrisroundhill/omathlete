@@ -28,6 +28,7 @@ does not discard your followed teams. To remove that data as well, delete:
 
 ```text
 ~/.local/state/omarchy/settings/omathlete.json
+~/.local/state/omarchy/settings/omathlete-reminders.json
 ~/.cache/omarchy/omathlete/
 ```
 
@@ -48,6 +49,7 @@ does not discard your followed teams. To remove that data as well, delete:
 - Press `x` or Delete to unfollow the selected team.
 - Press `s` to persistently hide or show scores.
 - Press `r` to refresh now.
+- Press `g` for your sports agenda or `l` for your watch-later queue.
 - Press Escape to close.
 - Middle-click the bar widget to refresh without opening it.
 
@@ -75,6 +77,33 @@ Favorites display cached games first, then update individually as requests
 finish. Teams without cached data appear as loading placeholders. Full Slate
 fetches up to three leagues concurrently and creates rows as you scroll.
 Refreshes preserve the selected team/game and its position in the viewport.
+
+## Agenda, watch later, and reminders
+
+The agenda shows followed teams' games for Today, Tomorrow, Weekend
+(Saturday–Sunday), or Seven Days. Press `1`–`4` to select a period and Tab
+to switch between the agenda and watch-later queue. Dates use your local
+timezone. A matchup between two followed teams appears once. Coverage depends
+on ESPN's available schedules; the agenda is capped at 32 games per team.
+
+Press `w` on an agenda or team-detail game to save it for later. Its scores and revealing
+status descriptions stay hidden throughout the widget, including the bar,
+until you mark it watched/remove it with `w`. Global spoiler mode still takes
+precedence. In the planner, `v` explicitly reveals only the selected result;
+moving to another game or closing the planner clears that temporary reveal.
+Saved games remain in the queue even after leaving the schedule window. If a
+result is no longer cached, `o` opens its ESPN page (which may show spoilers).
+
+Reminders are **off by default**. Press `b` on a game to cycle Off → 15 minutes
+before → At start → Off. Reminder messages contain only the matchup, local
+start time, and broadcast—not scores. `q` toggles the default local quiet window
+of 10 p.m.–8 a.m. Both lists hold up to 32 games.
+
+Reminders run only while the desktop shell/plugin is running, using recently
+cached schedules. Delivery is deduplicated across shell restarts. Reminders
+missed by more than two minutes are skipped, so resuming the desktop does not
+produce a backlog. Removing a followed team stops its cache refreshes and may
+prevent its saved reminders from being delivered.
 
 Sorting changes only the current view. Manual order is retained when viewing
 teams by next game or league, and the selected sort mode, manual order, and idle
@@ -125,6 +154,8 @@ bash tests/reliability.sh
 node tests/panel-logic.mjs
 node tests/loading.mjs
 node tests/slate-view.mjs
+node tests/planner.mjs
+node tests/planner-view.mjs
 tests/smoke.sh
 ```
 

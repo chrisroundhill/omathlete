@@ -62,7 +62,75 @@ function freshness(item, now) {
 
 function preferences(state) {
   return {spoilersHidden: state.spoilersHidden === true, sortMode: state.sortMode || "manual",
-    pinnedTeam: state.pinnedTeam || null, teams: (state.teams || []).slice()};
+    pinnedTeam: state.pinnedTeam || null, teams: (state.teams || []).slice(),
+    watchLater: (state.watchLater || []).slice(), reminders: (state.reminders || []).slice(),
+    quietHours: state.quietHours !== false};
+}
+
+function gameSnapshot(game) {
+  return {sport:game.sport,id:game.id,date:game.date,homeTeam:game.homeTeam,awayTeam:game.awayTeam,
+    broadcast:game.broadcast || "",gameUrl:game.gameUrl || ""};
+}
+
+function protectedGame(game, sport, state) {
+  if (state.spoilersHidden) return true;
+  var key = (sport || game.sport) + ":" + game.id;
+  return (state.watchLater || []).some(function(saved) { return gameKey(saved) === key; });
+}
+
+function agendaGames(teams) {
+  teams = teams.slice().sort(function(a,b) { return (b.updatedAt || 0) - (a.updatedAt || 0); });
+  var games = {}, result = [];
+  for (var i = 0; i < teams.length; i++) {
+    var team = teams[i];
+    var schedule = (team.agenda || []).concat(team.schedule || []);
+    for (var j = 0; j < schedule.length; j++) {
+      var game = schedule[j];
+      if (!game.id) continue;
+      var key = team.sport + ":" + game.id;
+      if (games[key]) continue;
+      var entry = Object.assign({}, game, {sport:team.sport,stale:team.stale,updatedAt:team.updatedAt});
+      entry.homeTeam = game.homeTeam || (game.isHome ? team.teamAbbrev : game.opponent);
+      entry.awayTeam = game.awayTeam || (game.isHome ? game.opponent : team.teamAbbrev);
+      entry.homeScore = game.isHome ? game.teamScore : game.opponentScore;
+      entry.awayScore = game.isHome ? game.opponentScore : game.teamScore;
+      games[key] = true;
+      result.push(entry);
+    }
+  }
+  return result.sort(function(a, b) { return Date.parse(a.date) - Date.parse(b.date); });
+}
+
+function agendaRange(range, now) {
+  var day = new Date(now);
+  var start = new Date(day.getFullYear(), day.getMonth(), day.getDate());
+  var days = 1;
+  if (range === 1) start.setDate(start.getDate() + 1);
+  if (range === 2) {
+    start.setDate(start.getDate() + (day.getDay() === 0 ? -1 : (6 - day.getDay())));
+    days = 2;
+  }
+  if (range === 3) days = 7;
+  var end = new Date(start); end.setDate(end.getDate() + days);
+  return [start.getTime(), end.getTime()];
+}
+
+function plannerRows(teams, state, range, watchLater, now) {
+  var all = agendaGames(teams), bounds = agendaRange(range, now);
+  var games = watchLater ? (state.watchLater || []).map(function(saved) {
+    return all.filter(function(game) { return gameKey(game) === gameKey(saved); })[0]
+      || Object.assign({}, saved, {state:"unknown"});
+  }) : all.filter(function(game) { var date = Date.parse(game.date); return date >= bounds[0] && date < bounds[1]; });
+  return games.sort(function(a,b) { return Date.parse(a.date) - Date.parse(b.date); }).map(function(game) {
+    var date = new Date(game.date);
+    var reminder = (state.reminders || []).filter(function(item) { return gameKey(item) === gameKey(game); })[0];
+    return Object.assign({}, game, {
+      day: ["Sun","Mon","Tue","Wed","Thu","Fri","Sat"][date.getDay()] + " · "
+        + ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"][date.getMonth()] + " " + date.getDate(),
+      saved: (state.watchLater || []).some(function(item) { return gameKey(item) === gameKey(game); }),
+      reminder: reminder ? (reminder.leadMinutes ? "15m before" : "At start") : "Off"
+    });
+  });
 }
 
 function teamKey(team) {
@@ -77,6 +145,20 @@ function applyPreference(state, action) {
   for (var i = 0; i < next.teams.length; i++)
     if (teamKey(next.teams[i]) === key) index = i;
   switch (command[0]) {
+  case "watch-game":
+    var watchedKey = command[1] + ":" + command[2];
+    var saved = next.watchLater.some(function(game) { return gameKey(game) === watchedKey; });
+    next.watchLater = next.watchLater.filter(function(game) { return gameKey(game) !== watchedKey; });
+    if (!saved && action.team && next.watchLater.length < 32) next.watchLater.push(gameSnapshot(action.team));
+    break;
+  case "remind-game":
+    var reminderKey = command[1] + ":" + command[2];
+    var oldReminder = next.reminders.filter(function(game) { return gameKey(game) === reminderKey; })[0];
+    next.reminders = next.reminders.filter(function(game) { return gameKey(game) !== reminderKey; });
+    if ((!oldReminder || oldReminder.leadMinutes === 15) && action.team && next.reminders.length < 32)
+      next.reminders.push(Object.assign(gameSnapshot(action.team), {leadMinutes:oldReminder ? 0 : 15}));
+    break;
+  case "toggle-quiet": next.quietHours = !next.quietHours; break;
   case "toggle-spoilers": next.spoilersHidden = !next.spoilersHidden; break;
   case "cycle-sort":
     next.sortMode = next.sortMode === "manual" ? "next" : next.sortMode === "next" ? "league" : "manual";

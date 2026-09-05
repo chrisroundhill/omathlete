@@ -34,6 +34,9 @@ Panel {
   readonly property var detailTeam: findTeam(detailTeamKey)
   property int gameSelectedIndex: 0
   property bool fullSlateOpen: false
+  property bool plannerOpen: false
+  property bool watchLaterOpen: false
+  property int agendaRange: 0
   property bool slateBusy: false
   property var slateGames: []
   property bool slateStale: false
@@ -69,7 +72,7 @@ Panel {
     if (busy && teams.length === 0) return "…"
     if (!barTeam) return ""
     if (barLive) {
-      if (spoilersHidden) return barTeam.teamAbbrev + " · Live"
+      if (gameHidden(barTeam.current, barTeam.sport)) return barTeam.teamAbbrev + " · Live"
       return barTeam.teamAbbrev + " " + barTeam.current.teamScore
         + "–" + barTeam.current.opponentScore + " · " + barTeam.current.detail
     }
@@ -91,7 +94,26 @@ Panel {
     if (spoilersHidden) {
       scoreFlashTeams = ({})
       scoreFlashTimer.stop()
+      plannerView.revealedKey = ""
     }
+  }
+
+  function gameHidden(game, sport) {
+    return !preferencesReady || Logic.protectedGame(game, sport, preferences)
+  }
+
+  function openPlanner(queue) {
+    searchOpen = false
+    teamDetailOpen = false
+    fullSlateOpen = false
+    watchLaterOpen = queue
+    plannerOpen = true
+    refresh(false)
+  }
+
+  function closePlanner() {
+    plannerOpen = false
+    keyCatcher.forceActiveFocus()
   }
 
   onSelectedIndexChanged: if (!restoringViewport) Qt.callLater(function() { root.ensureItemVisible(teamRepeater.itemAt(root.selectedIndex)) })
@@ -102,7 +124,7 @@ Panel {
   })
 
   function captureViewport() {
-    if (!root.opened || fullSlateOpen || searchOpen) return null
+    if (!root.opened || fullSlateOpen || searchOpen || plannerOpen) return null
     if (restoringViewport) return pendingViewport
     var repeater = teamDetailOpen ? detailRepeater : teamRepeater
     var items = teamDetailOpen ? (detailTeam ? detailTeam.schedule || [] : []) : teams
@@ -220,6 +242,7 @@ Panel {
     pendingSelectionKey = teamKey(teams[selectedIndex])
     preferenceQueue = preferenceQueue.concat([{command: command, team: team || null}])
     preferences = Logic.projectedPreferences(savedPreferences, preferenceQueue)
+    if (command[0] === "watch-game") scoreFlashTeams = ({})
     restoreSelection()
     startPreference()
   }
@@ -301,6 +324,7 @@ Panel {
     root.refresh(false)
   }
   function close() {
+    plannerOpen = false
     searchOpen = false
     teamDetailOpen = false
     fullSlateOpen = false
@@ -349,7 +373,7 @@ Panel {
       var nextTeams = nextReport.teams || []
       for (var i = 0; i < nextTeams.length; i++) {
         var nextTeam = nextTeams[i]
-        if (!nextTeam.current || nextTeam.current.state !== "in") continue
+        if (!nextTeam.current || nextTeam.current.state !== "in" || gameHidden(nextTeam.current, nextTeam.sport)) continue
         for (var j = 0; j < previousTeams.length; j++) {
           var previousTeam = previousTeams[j]
           if (previousTeam.sport !== nextTeam.sport || previousTeam.teamId !== nextTeam.teamId
@@ -560,6 +584,8 @@ Panel {
     }
     onExited: function(exitCode) {
       root.busy = false
+      if ((root.preferences.reminders || []).length > 0 && !reminderProcess.running)
+        reminderProcess.running = true
       if (exitCode !== 0) {
         root.errorMessage = "Some games couldn't update · r to retry"
         root.adoptReport({teams: (root.report.teams || []).map(function(team) {
@@ -678,6 +704,20 @@ Panel {
   }
 
   Process { id: browserProcess }
+  Process {
+    id: reminderProcess
+    command: [root.backend, "check-reminders"]
+  }
+
+  Timer {
+    interval: 60000
+    repeat: true
+    running: (root.preferences.reminders || []).length > 0
+    onTriggered: {
+      // Refresh first so reminder decisions use the latest known start time.
+      root.refresh(false)
+    }
+  }
 
   Timer {
     interval: 15 * 1000
@@ -702,20 +742,27 @@ Panel {
     open: root.opened
     focusTarget: keyCatcher
     contentWidth: panel.fittedContentWidth(Style.space(380))
-    contentHeight: panel.fittedContentHeight(root.fullSlateOpen ? Style.space(560)
+    contentHeight: panel.fittedContentHeight(root.fullSlateOpen || root.plannerOpen ? Style.space(560)
       : content.implicitHeight + shortcutFooter.height, Style.space(560))
 
     PanelKeyCatcher {
       id: keyCatcher
       anchors.fill: parent
       onCloseRequested: {
-        if (root.teamDetailOpen) root.closeTeamDetail()
+        if (root.plannerOpen) root.closePlanner()
+        else if (root.teamDetailOpen) root.closeTeamDetail()
         else if (root.fullSlateOpen) root.toggleFullSlate()
         else root.close()
       }
       onTabRequested: function(direction) { root.switchPanel(direction) }
 
       Keys.onPressed: function(event) {
+        if (root.plannerOpen) return
+        if (event.key === Qt.Key_G || event.key === Qt.Key_L) {
+          root.openPlanner(event.key === Qt.Key_L)
+          event.accepted = true
+          return
+        }
         if (event.key === Qt.Key_J || event.key === Qt.Key_K
             || event.key === Qt.Key_Down || event.key === Qt.Key_Up)
           root.cancelViewportRestore()
@@ -741,7 +788,11 @@ Panel {
           }
         } else if (root.teamDetailOpen) {
           var games = root.detailTeam && root.detailTeam.schedule ? root.detailTeam.schedule : []
-          if (event.key === Qt.Key_J || event.key === Qt.Key_Down) {
+          if ((event.key === Qt.Key_W || event.key === Qt.Key_B) && games[root.gameSelectedIndex]) {
+            var game = Object.assign({}, games[root.gameSelectedIndex], {sport: root.detailTeam.sport})
+            root.queuePreference([event.key === Qt.Key_W ? "watch-game" : "remind-game", game.sport, game.id], game)
+            event.accepted = true
+          } else if (event.key === Qt.Key_J || event.key === Qt.Key_Down) {
             root.gameSelectedIndex = Math.min(games.length - 1, root.gameSelectedIndex + 1)
             event.accepted = true
           } else if (event.key === Qt.Key_K || event.key === Qt.Key_Up) {
@@ -803,6 +854,7 @@ Panel {
 
       Flickable {
         id: scoreFlick
+        visible: !root.plannerOpen
         anchors.top: parent.top
         anchors.left: parent.left
         anchors.right: parent.right
@@ -874,6 +926,31 @@ Panel {
                 anchors.fill: parent
                 cursorShape: Qt.PointingHandCursor
                 onClicked: root.toggleSpoilers()
+              }
+            }
+          }
+
+          Row {
+            visible: !root.searchOpen && !root.teamDetailOpen
+            width: parent.width - Style.space(28)
+            spacing: Style.space(8)
+            Repeater {
+              model: ["Agenda · g", "Watch later · l"]
+              Rectangle {
+                required property string modelData
+                required property int index
+                width: (content.width - Style.space(36)) / 2
+                height: Style.space(30)
+                color: Style.normalFillFor(root.barForeground, Color.accent)
+                radius: Style.cornerRadius
+                Text {
+                  anchors.centerIn: parent
+                  text: modelData
+                  color: root.barForeground
+                  font.pixelSize: Style.font.caption
+                  font.family: Style.font.family
+                }
+                MouseArea { anchors.fill: parent; onClicked: root.openPlanner(parent.index === 1) }
               }
             }
           }
@@ -1149,7 +1226,7 @@ Panel {
                     width: parent.width
                     text: {
                       var matchup = modelData.awayTeam + " @ " + modelData.homeTeam
-                      if (modelData.state === "pre" || root.spoilersHidden) return matchup
+                      if (modelData.state === "pre" || root.gameHidden(modelData, modelData.sport)) return matchup
                       return matchup + "  " + modelData.awayScore + "–" + modelData.homeScore
                     }
                     color: root.barForeground
@@ -1162,7 +1239,7 @@ Panel {
                     width: parent.width
                     text: modelData.state === "pre"
                       ? modelData.when + (modelData.broadcast ? " · " + modelData.broadcast : "")
-                      : Logic.statusText(modelData, root.spoilersHidden)
+                      : Logic.statusText(modelData, root.gameHidden(modelData, modelData.sport))
                     color: Qt.darker(root.barForeground, 1.25)
                     elide: Text.ElideRight
                     font.family: root.bar ? root.bar.fontFamily : Style.font.family
@@ -1243,7 +1320,7 @@ Panel {
                     text: {
                       var matchup = root.detailTeam.teamAbbrev
                         + (modelData.isHome ? " vs " : " @ ") + modelData.opponent
-                      if (modelData.kind === "upcoming" || root.spoilersHidden) return matchup
+                      if (modelData.kind === "upcoming" || root.gameHidden(modelData, root.detailTeam.sport)) return matchup
                       return matchup + "  " + modelData.teamScore + "–" + modelData.opponentScore
                     }
                     color: root.barForeground
@@ -1257,7 +1334,7 @@ Panel {
                     text: modelData.when
                       + (modelData.kind === "upcoming"
                         ? " · " + (modelData.broadcast || "TV TBA")
-                        : " · " + Logic.statusText(modelData, root.spoilersHidden)
+                        : " · " + Logic.statusText(modelData, root.gameHidden(modelData, root.detailTeam.sport))
                           + (modelData.broadcast ? " · " + modelData.broadcast : ""))
                     color: Qt.darker(root.barForeground, 1.25)
                     elide: Text.ElideRight
@@ -1394,8 +1471,9 @@ Panel {
                       var game = modelData.current
                       if (!game) return modelData.loading && !modelData.updatedAt ? "Loading games…"
                         : modelData.stale && !modelData.updatedAt ? "Games unavailable" : "No recent game"
-                      var score = root.spoilersHidden ? "" : " · " + game.teamScore + "–" + game.opponentScore
-                      return (game.isHome ? "vs " : "@ ") + game.opponent + score + " · " + Logic.statusText(game, root.spoilersHidden)
+                      var hidden = root.gameHidden(game, modelData.sport)
+                      var score = hidden ? "" : " · " + game.teamScore + "–" + game.opponentScore
+                      return (game.isHome ? "vs " : "@ ") + game.opponent + score + " · " + Logic.statusText(game, hidden)
                     }
                     color: root.barForeground
                     elide: Text.ElideRight
@@ -1449,6 +1527,31 @@ Panel {
         }
       }
 
+      PlannerView {
+        id: plannerView
+        visible: root.plannerOpen
+        anchors.top: parent.top
+        anchors.bottom: shortcutFooter.top
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.margins: Style.space(14)
+        rows: Logic.plannerRows(root.teams, root.preferences, root.agendaRange, root.watchLaterOpen, root.now)
+        range: root.agendaRange
+        watchLater: root.watchLaterOpen
+        quietHours: root.preferences.quietHours !== false
+        warning: root.errorMessage || (root.report.stale ? "Some schedules are cached or unavailable." : "")
+        isHidden: function(game) { return root.gameHidden(game, game.sport) }
+        onChooseRange: function(value) { root.agendaRange = value; root.watchLaterOpen = false; revealedKey = "" }
+        onChooseQueue: function(value) { root.watchLaterOpen = value; revealedKey = "" }
+        onWatchGame: function(game) { revealedKey = ""; root.queuePreference(["watch-game", game.sport, game.id], game) }
+        onRemindGame: function(game) { root.queuePreference(["remind-game", game.sport, game.id], game) }
+        onQuietToggle: root.queuePreference(["toggle-quiet"])
+        onLaunch: function(game) { root.launchGameUrl(game.gameUrl) }
+        onBack: root.closePlanner()
+        onRefresh: root.refresh(true)
+        onSpoilersToggle: root.toggleSpoilers()
+      }
+
       Rectangle {
         id: shortcutFooter
         anchors.left: parent.left
@@ -1473,15 +1576,17 @@ Panel {
           anchors.leftMargin: Style.space(14)
           anchors.rightMargin: Style.space(14)
           anchors.verticalCenter: parent.verticalCenter
-          text: root.searchOpen
+          text: root.plannerOpen
+            ? "1–4 dates   tab agenda/queue   j/k move   w watch/remove   b bell   v reveal   s spoilers   o ESPN   q quiet   r refresh   esc back"
+            : root.searchOpen
             ? "↑/↓ move   enter follow   esc back"
             : root.fullSlateOpen
               ? "a my teams   j/k move   o open ESPN   s spoilers   r refresh"
               : root.teamDetailOpen
-                ? "j/k move   o open ESPN   s spoilers   r refresh   h/esc back"
+                ? "j/k move   o open ESPN   w watch later   b bell   s spoilers   r refresh   h/esc back"
                 : "/ search   a slate   j/k move   o sort   p pin   enter details"
                   + (root.sortMode === "manual" ? "   shift+j/k reorder" : "")
-                  + "   x remove   s spoilers"
+                  + "   x remove   s spoilers   g agenda   l watch later"
           color: Qt.darker(root.barForeground, 1.4)
           wrapMode: Text.WordWrap
           font.family: root.bar ? root.bar.fontFamily : Style.font.family
