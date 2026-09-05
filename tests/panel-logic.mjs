@@ -33,6 +33,9 @@ const panel = vm.createContext({Logic: logic, console,
   preferences: {teams: [team], spoilersHidden: false, sortMode: 'manual'},
   preferencesReady: true, preferenceQueue: [],
   selectedIndex: 0, pendingSelectionKey: '', gameSelectedIndex: 0,
+  viewportGeneration: 0, pendingViewport: null, restoringViewport: false,
+  slateViewportGeneration: 0, restoringSlateViewport: false,
+  searchOpen: false, teamDetailOpen: false, slateGames: [], slateSelectedIndex: 0,
   detailTeamKey: {sport: 'mlb', teamId: '16'},
   detailProcess: {running: true}, preferenceProcess: {running: false},
   scoreFlashTimer: {restart() {}}, scoreFlashTeams: {},
@@ -88,7 +91,7 @@ panel.detailProcess.running = false;
 panel.lastRefreshAt = Date.now() - 300000;
 panel.tick();
 assert.equal(panel.detailProcess.running, true);
-assert.equal(panel.detailProcess.command[1], 'detail');
+assert.equal(panel.detailProcess.command[1], 'detail-stream');
 
 // Details resolve fresh objects and follow a selected game across kickoff/reordering.
 panel.report = {teams: [{...team, schedule: [{id: 'older'}, {...team.upcoming}]}]};
@@ -101,5 +104,65 @@ panel.adoptReport({teams: [{...team, current: {...live, teamScore: '2'}, schedul
 assert.equal(panel.detailTeam.schedule[0].teamScore, '2');
 assert.equal(panel.gameSelectedIndex, 0);
 assert.equal(logic.selectedGameIndex([], 'removed', 3), 0);
+
+// Incremental results retain other teams and never replace fresh data with a cache snapshot.
+const other = {sport: 'nba', teamId: '4', teamAbbrev: 'CHI', upcoming: {date: '2026-09-06T18:00:00Z'}};
+panel.preferences = {...panel.preferences, teams: [team, other]};
+panel.adoptTeamMessage({type: 'snapshot', teams: [{...team, current: {teamScore: 'old'}}, other]});
+assert.equal(panel.report.teams.length, 2);
+assert.equal(panel.findTeam(team).current.teamScore, '2');
+panel.adoptTeamMessage({type: 'team', team: {...other, current: {state: 'in', teamScore: '44'}}});
+assert.equal(panel.findTeam(other).current.teamScore, '44');
+assert.equal(panel.findTeam(team).current.teamScore, '2');
+assert.equal(panel.report.teams.length, 2);
+
+function flush() { while (calls.length) calls.shift()(); }
+flush();
+panel.opened = true;
+panel.fullSlateOpen = false;
+panel.content = {};
+panel.scoreFlick = {contentY: 100, contentHeight: 500, height: 250};
+const third = {sport: 'mlb', teamId: '12', teamAbbrev: 'SEA'};
+const fourth = {sport: 'nfl', teamId: '3', teamAbbrev: 'CHI'};
+panel.preferences = {...panel.preferences, teams: [team, other, third, fourth], sortMode: 'next'};
+panel.report = {teams: [team, other, third, fourth]};
+panel.teamRepeater = {itemAt: index => index >= 0 && index < panel.teams.length
+  ? {height: 100, mapToItem: () => ({y: index * 100})} : null};
+panel.selectedIndex = 1;
+const selectedKey = panel.teamKey(panel.teams[1]);
+// The selected row starts 0px below the viewport top; keep it there as it moves.
+panel.adoptReport({teams: [team, other, {...third, current: {state: 'in'}}, fourth]});
+flush();
+assert.equal(panel.teamKey(panel.teams[panel.selectedIndex]), selectedKey);
+assert.equal(panel.scoreFlick.contentY, 200);
+
+// Full Slate preserves identity across rank changes, including identical ESPN IDs in different leagues.
+panel.fullSlateOpen = true;
+panel.slateGames = [{sport: 'mlb', id: '1'}, {sport: 'nba', id: '1'}, {sport: 'mls', id: '2'}];
+panel.slateSelectedIndex = 1;
+panel.slateList = {contentY: 100, height: 100,
+  indexAt: (_x, y) => Math.floor(y / 100),
+  itemAtIndex: index => index >= 0 && index < panel.slateGames.length ? {y: index * 100, height: 100} : null,
+  forceLayout() {}, positionViewAtIndex(index) { this.contentY = index * 100; }, returnToBounds() {}};
+panel.ListView = {Beginning: 0};
+panel.adoptSlate({games: [{sport: 'nba', id: '1'}, {sport: 'mls', id: '2'}, {sport: 'mlb', id: '1'}]});
+flush();
+assert.equal(panel.slateSelectedIndex, 0);
+assert.equal(panel.slateList.contentY, 0);
+assert.equal(panel.restoringSlateViewport, false);
+
+// A late update from a removed team must not bring it back or displace a new favorite.
+panel.preferences = {...panel.preferences, teams: [team]};
+panel.adoptTeamMessage({type: 'team', team: other});
+assert.equal(panel.report.teams.length, 1);
+assert.equal(panel.report.teams[0].teamId, team.teamId);
+
+// Explicit navigation cancels a deferred background scroll correction.
+panel.fullSlateOpen = false;
+panel.scoreFlick.contentY = 50;
+panel.restoreViewport({y: 0, detail: false});
+panel.cancelViewportRestore();
+flush();
+assert.equal(panel.scoreFlick.contentY, 50);
 
 console.log('Omathlete panel interaction tests passed.');

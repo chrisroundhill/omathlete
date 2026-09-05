@@ -25,6 +25,11 @@ responses have smaller type-specific byte limits. Team catalogs, merged event
 feeds, team schedules, league slates, text fields, and the final JSON emitted to
 the shell are also explicitly bounded.
 
+Incremental favorite refreshes emit at most 14 newline-delimited messages:
+one cached snapshot, up to 12 team updates, and completion. Each message is
+limited to 1 MiB and the entire stream to 2 MiB. Full Slate fetches at most
+three leagues concurrently; existing response, cache, and output limits apply.
+
 ESPN's site API is undocumented and may change. Team and league names and logos
 remain the property of their respective owners; their inclusion does not imply
 affiliation or endorsement.

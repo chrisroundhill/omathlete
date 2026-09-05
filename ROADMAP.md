@@ -35,6 +35,8 @@ basketball, Premier League, and MLS.
 - Background kickoff discovery, local countdowns, and refreshing open details.
 - Immediate preferences with serialized saves independent of provider requests.
 - Atomic game caches, partial-catalog recovery, and per-team data age.
+- Cached-first incremental favorites, bounded parallel slates, and virtualized slate rows.
+- Selection and viewport preservation across provider updates and automatic sorting.
 
 ## Deliberately deferred
 

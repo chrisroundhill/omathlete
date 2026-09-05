@@ -29,6 +29,14 @@ case "$url" in
   *) exit 22 ;;
 esac
 
+if [[ -n ${OMATHLETE_FIXTURE_JOURNAL:-} ]]; then
+  printf '%s\tstart\t%s\n' "$$" "$sport" >>"$OMATHLETE_FIXTURE_JOURNAL"
+  trap 'printf "%s\tend\t%s\n" "$$" "$sport" >>"$OMATHLETE_FIXTURE_JOURNAL"' EXIT
+fi
+if [[ ${OMATHLETE_FIXTURE_DELAY_SPORT:-} == all || ${OMATHLETE_FIXTURE_DELAY_SPORT:-} == "$sport" ]]; then
+  sleep "${OMATHLETE_FIXTURE_DELAY_SECONDS:-1}"
+fi
+
 [[ ${OMATHLETE_FIXTURE_FAIL_SPORT:-} != "$sport" ]] || exit 22
 if [[ ${OMATHLETE_FIXTURE_BAD_SHAPE:-0} == 1 ]]; then
   printf '%s\n' '{"events":"unexpected-provider-shape"}'

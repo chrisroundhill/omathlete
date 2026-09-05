@@ -13,6 +13,8 @@ readonly MAX_CATALOG_CACHE_BYTES=$((2 * 1024 * 1024))
 readonly MAX_TEAM_CACHE_BYTES=$((64 * 1024))
 readonly MAX_SLATE_CACHE_BYTES=$((512 * 1024))
 readonly MAX_QML_OUTPUT_BYTES=$((1024 * 1024))
+readonly MAX_STREAM_OUTPUT_BYTES=$((2 * 1024 * 1024))
+readonly MAX_SLATE_REQUESTS=3
 readonly MAX_CATALOG_TEAMS=5000
 readonly MAX_MERGED_EVENTS=1000
 readonly MAX_UPCOMING_GAMES=3
@@ -620,6 +622,71 @@ detail() {
   fi
 }
 
+team_snapshot() {
+  local team="$1" path age
+  path="$CACHE_DIR/$(jq -r '.sport + "-" + .teamId' <<<"$team").json"
+  if valid_json_file "$path" "$MAX_TEAM_CACHE_BYTES" \
+      && jq -e '.teamId and (.schedule | type == "array")' "$path" >/dev/null 2>&1; then
+    age=$(( $(date +%s) - $(stat -c %Y "$path") ))
+    jq -c --argjson stale "$([[ $age -ge $CACHE_TTL ]] && printf true || printf false)" \
+      '. + {stale:$stale,loading:true}' "$path"
+  else
+    jq -c '. + {current:null,upcoming:null,schedule:[],stale:false,loading:true,updatedAt:null}' <<<"$team"
+  fi
+}
+
+# One parent writes complete JSON lines: children never interleave stdout.
+# At most one snapshot + twelve team updates + a completion message are emitted.
+stream_emit() {
+  local LC_ALL=C
+  local line="$1" size
+  size=$((${#line} + 1))
+  (( size <= MAX_QML_OUTPUT_BYTES && stream_bytes + size <= MAX_STREAM_OUTPUT_BYTES )) || return 1
+  stream_bytes=$((stream_bytes + size))
+  printf '%s\n' "$line"
+}
+
+detail_stream() (
+  local state work index team finished force=false key requested stream_bytes=0
+  local -a teams=() snapshots=() live_keys=()
+  local -A jobs=()
+  [[ ${1:-} == --no-cache ]] && force=true
+  if [[ ${1:-} == --live ]]; then shift; live_keys=("$@"); fi
+  state=$(read_state)
+  work=$(mktemp -d "$CACHE_DIR/.stream.XXXXXX") || exit 1
+  trap 'if ((${#jobs[@]})); then kill "${!jobs[@]}" 2>/dev/null || true; wait "${!jobs[@]}" 2>/dev/null || true; fi; rm -rf "$work"' EXIT
+  mapfile -t teams < <(jq -c '.teams[]' <<<"$state")
+  for team in "${teams[@]}"; do snapshots+=("$(team_snapshot "$team")"); done
+  stream_emit "$(printf '%s\n' "${snapshots[@]}" | jq -sc '{type:"snapshot",teams:.}')" || exit 1
+  for index in "${!teams[@]}"; do
+    team="${teams[index]}"
+    local force_team="$force"
+    key=$(jq -r '.sport + ":" + .teamId' <<<"$team")
+    for requested in "${live_keys[@]}"; do
+      [[ $requested == "$key" ]] && force_team=true
+    done
+    (team_detail "$team" "$force_team" >"$work/$index.json") &
+    jobs[$!]="$index"
+  done
+  while ((${#jobs[@]})); do
+    finished=""
+    wait -n -p finished "${!jobs[@]}" || true
+    [[ -n $finished ]] || exit 1
+    index="${jobs[$finished]}"
+    unset 'jobs[$finished]'
+    if valid_json_file "$work/$index.json" "$MAX_TEAM_CACHE_BYTES" \
+        && jq -e 'type == "object" and .teamId and (.schedule | type == "array")' \
+          "$work/$index.json" >/dev/null 2>&1; then
+      team=$(cat "$work/$index.json")
+    else
+      key=$(jq -r '.sport + "-" + .teamId' <<<"${teams[index]}")
+      team=$(stale_team "${teams[index]}" "$CACHE_DIR/$key.json")
+    fi
+    stream_emit "$(jq -c '{type:"team",team:(. + {loading:false})}' <<<"$team")" || exit 1
+  done
+  stream_emit '{"type":"done"}'
+)
+
 cached_slate() {
   local cache_file="$1" stale="$2"
   valid_json_file "$cache_file" "$MAX_SLATE_CACHE_BYTES" || return 1
@@ -693,39 +760,46 @@ slate_sport() {
   fi
 }
 
-full_slate() {
-  local force=false state hidden date_key sport games item stale=false
-  local -a parts=() failed_leagues=()
+full_slate() (
+  local force=false state hidden date_key sport work finished
+  local -A jobs=()
   [[ ${1:-} == "--no-cache" ]] && force=true
   state=$(read_state)
   hidden=$(jq -r '.spoilersHidden' <<<"$state")
   date_key=$(date +%Y%m%d)
+  work=$(mktemp -d "$CACHE_DIR/.slate.XXXXXX") || exit 1
+  trap 'if ((${#jobs[@]})); then kill "${!jobs[@]}" 2>/dev/null || true; wait "${!jobs[@]}" 2>/dev/null || true; fi; rm -rf "$work"' EXIT
 
   while IFS= read -r sport; do
     [[ -n $sport ]] || continue
-    item=$(slate_sport "$sport" "$date_key" "$force") || item='{"games":[],"stale":true}'
-    if [[ $(jq -r '.stale' <<<"$item") == true ]]; then
-      stale=true
-      failed_leagues+=("$(sport_label "$sport")")
+    (
+      item=$(slate_sport "$sport" "$date_key" "$force") || item='{"games":[],"stale":true}'
+      jq -c --arg league "$(sport_label "$sport")" '. + {league:$league}' <<<"$item"
+    ) >"$work/$sport.json" &
+    jobs[$!]="$sport"
+    if ((${#jobs[@]} >= MAX_SLATE_REQUESTS)); then
+      finished=""
+      wait -n -p finished "${!jobs[@]}" || true
+      [[ -n $finished ]] || exit 1
+      unset 'jobs[$finished]'
     fi
-    parts+=("$(jq -c '.games' <<<"$item")")
   done < <(jq -r '.teams | map(.sport) | unique[]' <<<"$state")
 
-  if ((${#parts[@]})); then
-    games=$(printf '%s\n' "${parts[@]}" | jq -sc --argjson max "$MAX_SLATE_GAMES" \
-      'add | unique_by(.sport + ":" + .id)
-      | sort_by((if .state == "in" then 0 elif .state == "pre" then 1 else 2 end), .date)
-      | .[:$max]')
-  else
-    games='[]'
+  if ((${#jobs[@]})); then
+    wait "${!jobs[@]}" || true
+    jobs=()
   fi
-  jq -cn --arg date "$date_key" --argjson hidden "$hidden" --argjson stale "$stale" \
-    --argjson failedLeagues "$(printf '%s\n' "${failed_leagues[@]}" | jq -Rsc 'split("\n") | map(select(length > 0))')" \
-    --argjson games "$games" \
-    '{date:$date,spoilersHidden:$hidden,stale:$stale,failedLeagues:$failedLeagues,
-      games:$games,leagues:($games | map(.league) | unique)}' \
+  # A sentinel handles zero followed leagues without a special unbounded argv path.
+  printf '{"games":[],"stale":false}\n' >"$work/empty.json"
+  jq -sc --arg date "$date_key" --argjson hidden "$hidden" --argjson max "$MAX_SLATE_GAMES" '
+    . as $parts | ([$parts[] | select(.stale) | .league] | sort) as $failed |
+    ([.[].games[]] | unique_by(.sport + ":" + .id)
+      | sort_by((if .state == "in" then 0 elif .state == "pre" then 1 else 2 end), .date)
+      | .[:$max]) as $games |
+    {date:$date,spoilersHidden:$hidden,stale:($failed | length > 0),failedLeagues:$failed,
+      games:$games,leagues:($games | map(.league) | unique)}' "$work"/*.json \
     | bounded_output "$MAX_QML_OUTPUT_BYTES"
-}
+)
 
 # Serialize read/modify/write preferences even when separate plugin processes overlap.
 case "${1:-}" in
@@ -746,10 +820,11 @@ case "${1:-}" in
   move) move_team "${2:?sport required}" "${3:?team id required}" "${4:?direction required}" ;;
   toggle-pin) toggle_pin "${2:?sport required}" "${3:?team id required}" ;;
   detail) shift; detail "$@" ;;
+  detail-stream) shift; detail_stream "$@" ;;
   slate) full_slate "${2:-}" ;;
   state) read_state ;;
   *)
-    printf 'Usage: %s {add|search <query>|follow <sport> <team-id>|remove <sport> <team-id>|toggle-spoilers|cycle-sort|move <sport> <team-id> <-1|1>|toggle-pin <sport> <team-id>|detail [--no-cache|--live sport:id...]|slate [--no-cache]|state}\n' "$0" >&2
+    printf 'Usage: %s {add|search <query>|follow <sport> <team-id>|remove <sport> <team-id>|toggle-spoilers|cycle-sort|move <sport> <team-id> <-1|1>|toggle-pin <sport> <team-id>|detail [--no-cache|--live sport:id...]|detail-stream [--no-cache|--live sport:id...]|slate [--no-cache]|state}\n' "$0" >&2
     exit 2
     ;;
 esac

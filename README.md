@@ -71,6 +71,11 @@ Each team shows when its data was last updated. Provider failures preserve
 cached games, and unavailable data is distinguished from an empty schedule.
 Partial team-search refreshes retain the failed leagues' previous entries.
 
+Favorites display cached games first, then update individually as requests
+finish. Teams without cached data appear as loading placeholders. Full Slate
+fetches up to three leagues concurrently and creates rows as you scroll.
+Refreshes preserve the selected team/game and its position in the viewport.
+
 Sorting changes only the current view. Manual order is retained when viewing
 teams by next game or league, and the selected sort mode, manual order, and idle
 bar pin persist across shell restarts.
@@ -118,10 +123,14 @@ Run deterministic provider coverage and the optional live integration check:
 tests/provider-fixtures.sh
 bash tests/reliability.sh
 node tests/panel-logic.mjs
+node tests/loading.mjs
+node tests/slate-view.mjs
 tests/smoke.sh
 ```
 
 Node.js is needed only for development tests, not to run the plugin.
+The slate rendering test also uses Qt 6's `qmltestrunner` and QtTest module;
+set `QMLTESTRUNNER` if the executable is installed at a nonstandard path.
 
 ## License
 

@@ -42,6 +42,11 @@ Panel {
   property int liveBarIndex: 0
   property var scoreFlashTeams: ({})
   property string pendingSelectionKey: ""
+  property bool restoringViewport: false
+  property int viewportGeneration: 0
+  property var pendingViewport: null
+  property bool restoringSlateViewport: false
+  property int slateViewportGeneration: 0
 
   readonly property string sortMode: preferences.sortMode
   readonly property var pinnedTeam: preferences.pinnedTeam
@@ -89,10 +94,66 @@ Panel {
     }
   }
 
-  onSelectedIndexChanged: Qt.callLater(function() { root.ensureItemVisible(teamRepeater.itemAt(root.selectedIndex)) })
+  onSelectedIndexChanged: if (!restoringViewport) Qt.callLater(function() { root.ensureItemVisible(teamRepeater.itemAt(root.selectedIndex)) })
   onSearchSelectedIndexChanged: Qt.callLater(function() { root.ensureItemVisible(searchRepeater.itemAt(root.searchSelectedIndex)) })
-  onGameSelectedIndexChanged: Qt.callLater(function() { root.ensureItemVisible(detailRepeater.itemAt(root.gameSelectedIndex)) })
-  onSlateSelectedIndexChanged: Qt.callLater(function() { root.ensureItemVisible(slateRepeater.itemAt(root.slateSelectedIndex)) })
+  onGameSelectedIndexChanged: if (!restoringViewport) Qt.callLater(function() { root.ensureItemVisible(detailRepeater.itemAt(root.gameSelectedIndex)) })
+  onSlateSelectedIndexChanged: if (!restoringSlateViewport) Qt.callLater(function() {
+    slateList.positionViewAtIndex(root.slateSelectedIndex, ListView.Contain)
+  })
+
+  function captureViewport() {
+    if (!root.opened || fullSlateOpen || searchOpen) return null
+    if (restoringViewport) return pendingViewport
+    var repeater = teamDetailOpen ? detailRepeater : teamRepeater
+    var items = teamDetailOpen ? (detailTeam ? detailTeam.schedule || [] : []) : teams
+    var selected = teamDetailOpen ? gameSelectedIndex : selectedIndex
+    var selectedItem = repeater.itemAt(selected)
+    if (selectedItem) {
+      var selectedTop = selectedItem.mapToItem(content, 0, 0).y
+      if (selectedTop >= scoreFlick.contentY && selectedTop + selectedItem.height <= scoreFlick.contentY + scoreFlick.height)
+        return {key: teamDetailOpen ? Logic.gameKey(items[selected]) : teamKey(items[selected]),
+          detail: teamDetailOpen, offset: selectedTop - scoreFlick.contentY, y: scoreFlick.contentY}
+    }
+    for (var i = 0; i < items.length; i++) {
+      var item = repeater.itemAt(i)
+      if (!item) continue
+      var top = item.mapToItem(content, 0, 0).y
+      if (top + item.height > scoreFlick.contentY)
+        return {key: teamDetailOpen ? Logic.gameKey(items[i]) : teamKey(items[i]),
+          detail: teamDetailOpen, offset: top - scoreFlick.contentY, y: scoreFlick.contentY}
+    }
+    return {y: scoreFlick.contentY, detail: teamDetailOpen}
+  }
+
+  function cancelViewportRestore() {
+    viewportGeneration++
+    slateViewportGeneration++
+    restoringViewport = false
+    restoringSlateViewport = false
+    pendingViewport = null
+  }
+
+  function restoreViewport(anchor) {
+    pendingViewport = anchor
+    var generation = ++viewportGeneration
+    Qt.callLater(function() {
+      if (generation !== root.viewportGeneration) return
+      if (anchor && root.opened && !root.fullSlateOpen && !root.searchOpen
+          && anchor.detail === root.teamDetailOpen) {
+        var repeater = root.teamDetailOpen ? detailRepeater : teamRepeater
+        var items = root.teamDetailOpen ? (root.detailTeam ? root.detailTeam.schedule || [] : []) : root.teams
+        var target = anchor.y
+        for (var i = 0; i < items.length; i++) {
+          var key = root.teamDetailOpen ? Logic.gameKey(items[i]) : root.teamKey(items[i])
+          var item = repeater.itemAt(i)
+          if (key === anchor.key && item) { target = item.mapToItem(content, 0, 0).y - anchor.offset; break }
+        }
+        scoreFlick.contentY = Math.max(0, Math.min(target, scoreFlick.contentHeight - scoreFlick.height))
+      }
+      root.restoringViewport = false
+      root.pendingViewport = null
+    })
+  }
 
   function ensureItemVisible(item) {
     if (!item || !scoreFlick.visible) return
@@ -262,13 +323,13 @@ Panel {
     lastRefreshAt = Date.now()
     busy = true
     errorMessage = ""
-    detailProcess.command = force ? [root.backend, "detail", "--no-cache"] : [root.backend, "detail"]
+    detailProcess.command = force ? [root.backend, "detail-stream", "--no-cache"] : [root.backend, "detail-stream"]
     detailProcess.running = true
   }
 
   function refreshLive() {
     if (detailProcess.running || liveTeams.length === 0) return
-    var command = [root.backend, "detail", "--live"]
+    var command = [root.backend, "detail-stream", "--live"]
     for (var i = 0; i < liveTeams.length; i++)
       command.push(liveTeams[i].sport + ":" + liveTeams[i].teamId)
     busy = true
@@ -277,6 +338,8 @@ Panel {
   }
 
   function adoptReport(nextReport) {
+    var anchor = captureViewport()
+    restoringViewport = true
     var selectedKey = teamKey(teams[selectedIndex])
     var oldGames = detailTeam ? detailTeam.schedule || [] : []
     var selectedGame = Logic.gameKey(oldGames[gameSelectedIndex])
@@ -303,10 +366,60 @@ Panel {
     restoreSelection()
     gameSelectedIndex = Logic.selectedGameIndex(detailTeam ? detailTeam.schedule || [] : [],
       selectedGame, gameSelectedIndex)
+    restoreViewport(anchor)
     if (Object.keys(changed).length > 0) {
       scoreFlashTeams = changed
       scoreFlashTimer.restart()
     }
+  }
+
+  function adoptTeamMessage(message) {
+    if (message.type === "done") return
+    var incoming = message.type === "snapshot" ? message.teams
+      : message.type === "team" ? [message.team] : []
+    if (!Array.isArray(incoming) || incoming.length > 12) throw new Error("Invalid team update")
+    var existing = report.teams || []
+    if (preferencesReady) {
+      var allowed = preferences.teams.map(function(team) { return Logic.teamKey(team) })
+      existing = existing.filter(function(team) { return allowed.indexOf(Logic.teamKey(team)) >= 0 })
+      incoming = incoming.filter(function(team) { return allowed.indexOf(Logic.teamKey(team)) >= 0 })
+    }
+    var merged = Logic.mergeTeamUpdates(existing, incoming, message.type === "snapshot")
+    adoptReport({teams: merged, stale: merged.some(function(team) { return team.stale === true })})
+  }
+
+  function adoptSlate(slate) {
+    var selected = Logic.gameKey(slateGames[slateSelectedIndex])
+    var topIndex = slateList.indexAt(1, slateList.contentY + 1)
+    var selectedItem = slateList.itemAtIndex(slateSelectedIndex)
+    if (selectedItem && selectedItem.y >= slateList.contentY
+        && selectedItem.y + selectedItem.height <= slateList.contentY + slateList.height)
+      topIndex = slateSelectedIndex
+    var topItem = slateList.itemAtIndex(topIndex)
+    var anchorKey = Logic.gameKey(slateGames[topIndex])
+    var offset = topItem ? topItem.y - slateList.contentY : 0
+    var oldY = slateList.contentY
+    restoringSlateViewport = true
+    slateGames = slate.games || []
+    slateStale = slate.stale === true
+    slateError = (slate.failedLeagues || []).length > 0
+      ? "Couldn't update " + slate.failedLeagues.join(", ") + " · r to retry" : ""
+    slateSelectedIndex = Logic.selectedGameIndex(slateGames, selected, slateSelectedIndex)
+    var generation = ++slateViewportGeneration
+    Qt.callLater(function() {
+      if (generation !== root.slateViewportGeneration) return
+      if (root.fullSlateOpen) {
+        slateList.forceLayout()
+        var index = Logic.selectedGameIndex(root.slateGames, anchorKey, -1)
+        if (anchorKey && Logic.gameKey(root.slateGames[index]) === anchorKey) {
+          slateList.positionViewAtIndex(index, ListView.Beginning)
+          var item = slateList.itemAtIndex(index)
+          if (item) slateList.contentY = item.y - offset
+        } else slateList.contentY = oldY
+        slateList.returnToBounds()
+      }
+      root.restoringSlateViewport = false
+    })
   }
 
   function addTeam() {
@@ -393,6 +506,7 @@ Panel {
     searchOpen = false
     teamDetailOpen = false
     fullSlateOpen = true
+    scoreFlick.contentY = 0
     slateSelectedIndex = 0
     refreshSlate(false)
   }
@@ -431,13 +545,12 @@ Panel {
 
   Process {
     id: detailProcess
-    stdout: StdioCollector {
-      waitForEnd: true
-      onStreamFinished: {
-        var raw = String(text || "").trim()
+    stdout: SplitParser {
+      onRead: function(data) {
+        var raw = String(data || "").trim()
         if (!raw) return
         try {
-          root.adoptReport(JSON.parse(raw))
+          root.adoptTeamMessage(JSON.parse(raw))
           root.selectedIndex = Math.min(root.selectedIndex, Math.max(0, root.teams.length - 1))
           root.restoreSelection()
         } catch (error) {
@@ -447,7 +560,16 @@ Panel {
     }
     onExited: function(exitCode) {
       root.busy = false
-      if (exitCode !== 0 && root.teams.length === 0) root.errorMessage = "Scores unavailable"
+      if (exitCode !== 0) {
+        root.errorMessage = "Some games couldn't update · r to retry"
+        root.adoptReport({teams: (root.report.teams || []).map(function(team) {
+          if (!team.loading) return team
+          var failed = Object.assign({}, team)
+          failed.loading = false
+          failed.stale = true
+          return failed
+        }), stale: true})
+      }
       if (root.refreshPending) {
         var force = root.forceRefreshPending
         root.refreshPending = false
@@ -542,13 +664,7 @@ Panel {
       waitForEnd: true
       onStreamFinished: {
         try {
-          var slate = JSON.parse(String(text || "{}"))
-          root.slateGames = slate.games || []
-          root.slateStale = slate.stale === true
-          root.slateError = (slate.failedLeagues || []).length > 0
-            ? "Couldn't update " + slate.failedLeagues.join(", ") + " · r to retry" : ""
-          root.slateSelectedIndex = Math.min(root.slateSelectedIndex,
-            Math.max(0, root.slateGames.length - 1))
+          root.adoptSlate(JSON.parse(String(text || "{}")))
         } catch (error) {
           root.slateStale = true
           root.slateError = "Couldn't load games · r to retry"
@@ -586,8 +702,8 @@ Panel {
     open: root.opened
     focusTarget: keyCatcher
     contentWidth: panel.fittedContentWidth(Style.space(380))
-    contentHeight: panel.fittedContentHeight(
-      content.implicitHeight + shortcutFooter.height, Style.space(560))
+    contentHeight: panel.fittedContentHeight(root.fullSlateOpen ? Style.space(560)
+      : content.implicitHeight + shortcutFooter.height, Style.space(560))
 
     PanelKeyCatcher {
       id: keyCatcher
@@ -600,6 +716,9 @@ Panel {
       onTabRequested: function(direction) { root.switchPanel(direction) }
 
       Keys.onPressed: function(event) {
+        if (event.key === Qt.Key_J || event.key === Qt.Key_K
+            || event.key === Qt.Key_Down || event.key === Qt.Key_Up)
+          root.cancelViewportRestore()
         if (root.fullSlateOpen) {
           if (event.key === Qt.Key_J || event.key === Qt.Key_Down) {
             root.slateSelectedIndex = Math.min(root.slateGames.length - 1, root.slateSelectedIndex + 1)
@@ -689,7 +808,9 @@ Panel {
         anchors.right: parent.right
         anchors.bottom: shortcutFooter.top
         contentWidth: width
-        contentHeight: content.implicitHeight
+        contentHeight: root.fullSlateOpen ? height : content.implicitHeight
+        interactive: !root.fullSlateOpen
+        onMovementStarted: root.cancelViewportRestore()
         clip: true
 
         Column {
@@ -949,6 +1070,7 @@ Panel {
           }
 
           Column {
+            id: slateContainer
             visible: root.fullSlateOpen
             width: parent.width - Style.space(28)
             spacing: Style.space(4)
@@ -984,13 +1106,23 @@ Panel {
               font.pixelSize: Style.font.body
             }
 
-            Repeater {
-              id: slateRepeater
+            ListView {
+              id: slateList
+              width: parent.width
+              height: root.fullSlateOpen
+                ? Math.max(Style.space(60), scoreFlick.height - slateContainer.y - y - Style.space(14)) : 0
+              clip: true
+              reuseItems: true
+              cacheBuffer: 0
+              spacing: Style.space(4)
+              currentIndex: root.slateSelectedIndex
+              highlightFollowsCurrentItem: false
+              onMovementStarted: root.cancelViewportRestore()
               model: root.slateGames
-              Rectangle {
+              delegate: Rectangle {
                 required property var modelData
                 required property int index
-                width: parent.width
+                width: slateList.width
                 height: slateGameColumn.implicitHeight + Style.space(16)
                 radius: Style.cornerRadius
                 color: index === root.slateSelectedIndex
@@ -1042,7 +1174,7 @@ Panel {
                   anchors.fill: parent
                   hoverEnabled: true
                   cursorShape: modelData.gameUrl ? Qt.PointingHandCursor : Qt.ArrowCursor
-                  onEntered: root.slateSelectedIndex = parent.index
+                  onPositionChanged: if (containsMouse && !root.restoringSlateViewport) root.slateSelectedIndex = parent.index
                   onDoubleClicked: root.openSlateGame()
                 }
               }
@@ -1138,7 +1270,7 @@ Panel {
                   anchors.fill: parent
                   hoverEnabled: true
                   cursorShape: modelData.gameUrl ? Qt.PointingHandCursor : Qt.ArrowCursor
-                  onEntered: root.gameSelectedIndex = parent.index
+                  onPositionChanged: if (containsMouse && !root.restoringViewport) root.gameSelectedIndex = parent.index
                   onDoubleClicked: root.openSelectedGame()
                 }
               }
@@ -1198,7 +1330,7 @@ Panel {
               MouseArea {
                 anchors.fill: parent
                 hoverEnabled: true
-                onEntered: root.selectedIndex = parent.index
+                onPositionChanged: if (containsMouse && !root.restoringViewport) root.selectedIndex = parent.index
                 onDoubleClicked: root.openTeamDetail()
               }
 
@@ -1260,7 +1392,8 @@ Panel {
                     width: parent.width
                     text: {
                       var game = modelData.current
-                      if (!game) return modelData.stale && !modelData.updatedAt ? "Games unavailable" : "No recent game"
+                      if (!game) return modelData.loading && !modelData.updatedAt ? "Loading games…"
+                        : modelData.stale && !modelData.updatedAt ? "Games unavailable" : "No recent game"
                       var score = root.spoilersHidden ? "" : " · " + game.teamScore + "–" + game.opponentScore
                       return (game.isHome ? "vs " : "@ ") + game.opponent + score + " · " + Logic.statusText(game, root.spoilersHidden)
                     }

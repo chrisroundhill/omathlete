@@ -20,7 +20,20 @@ function countdown(date, now) {
 }
 
 function gameKey(game) {
-  return game ? String(game.id || game.gameUrl || (game.date + ":" + game.opponent)) : "";
+  return game ? (game.sport ? game.sport + ":" : "")
+    + String(game.id || game.gameUrl || (game.date + ":" + game.opponent)) : "";
+}
+
+function mergeTeamUpdates(existing, incoming, fillOnly) {
+  var result = existing.slice();
+  for (var i = 0; i < incoming.length; i++) {
+    var index = -1;
+    for (var j = 0; j < result.length; j++)
+      if (teamKey(result[j]) === teamKey(incoming[i])) { index = j; break; }
+    if (index < 0) result.push(incoming[i]);
+    else if (!fillOnly) result[index] = incoming[i];
+  }
+  return result.slice(0, 12);
 }
 
 function selectedGameIndex(schedule, key, previousIndex) {
@@ -39,6 +52,7 @@ function statusText(game, hidden) {
 function freshness(item, now) {
   if (!item) return "";
   var updated = Number(item.updatedAt || 0);
+  if (!updated && item.loading) return "Loading games…";
   if (!updated) return item.stale ? "Couldn't load games · r to retry" : "";
   var minutes = Math.max(0, Math.floor((now / 1000 - updated) / 60));
   var age = minutes < 1 ? "just now" : minutes < 60 ? minutes + "m ago"
