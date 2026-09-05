@@ -29,6 +29,16 @@ case "$url" in
   *) exit 22 ;;
 esac
 
+[[ ${OMATHLETE_FIXTURE_FAIL_SPORT:-} != "$sport" ]] || exit 22
+if [[ ${OMATHLETE_FIXTURE_BAD_SHAPE:-0} == 1 ]]; then
+  printf '%s\n' '{"events":"unexpected-provider-shape"}'
+  exit 0
+fi
+if [[ ${OMATHLETE_FIXTURE_BAD_EVENT:-0} == 1 ]]; then
+  printf '%s\n' '{"events":[{"date":{},"competitions":false}]}'
+  exit 0
+fi
+
 team=$(jq -ce --arg sport "$sport" '.[] | select(.sport == $sport)' \
   "$fixture_dir/provider-teams.json")
 
@@ -37,7 +47,7 @@ if [[ $url == *'/teams?limit=1000' ]]; then
     (if (env.OMATHLETE_FIXTURE_MANY_CATALOG // "0") == "1" then 1200 else 1 end) as $count
     | {sports:[{leagues:[{teams:[range(0; $count) as $index | {team:{
         id:(($index + 1) | tostring),
-        displayName:("Team " + ($index | tostring)),
+        displayName:((env.OMATHLETE_FIXTURE_CATALOG_PREFIX // "Team") + " " + ($index | tostring)),
         abbreviation:("T" + ($index | tostring))
       }}]}]}]}'
   exit 0
@@ -87,6 +97,7 @@ jq -cn --argjson team "$team" --arg url "$url" '
       and ($url | contains("/teams/"))
     then .events |= map(select(.competitions[0].status.type.state == "post"))
     else . end
+  | if (env.OMATHLETE_FIXTURE_EMPTY_EVENTS // "0") == "1" then .events = [] else . end
   | if ($url | contains("/scoreboard"))
     then .events[].competitions[0].competitors[].score |= .displayValue
     else . end

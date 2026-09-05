@@ -58,6 +58,19 @@ scoreboard mark without text. While a game is live, only the affected teams are
 refreshed every 15 seconds. A changed score receives a brief, non-animated
 highlight unless spoiler mode is enabled.
 
+With the panel closed, schedules refresh every five minutes, increasing to
+once a minute within 15 minutes of the next game. Countdown labels update
+locally every 15 seconds. Open team details continue updating as games go live
+or finish, preserving your selected game when its position changes.
+
+Spoiler, sort, and pin changes appear immediately and save independently of
+network refreshes. Hidden scores also replace provider status descriptions
+with generic labels so result summaries cannot reveal a winner.
+
+Each team shows when its data was last updated. Provider failures preserve
+cached games, and unavailable data is distinguished from an empty schedule.
+Partial team-search refreshes retain the failed leagues' previous entries.
+
 Sorting changes only the current view. Manual order is retained when viewing
 teams by next game or league, and the selected sort mode, manual order, and idle
 bar pin persist across shell restarts.
@@ -67,7 +80,7 @@ men's college basketball, the Premier League, and MLS.
 
 ## Requirements and data
 
-Omathlete uses `curl`, `jq`, and `omarchy-menu-select`, which ship with a stock
+Omathlete uses `curl`, `jq`, `flock` (util-linux), and `omarchy-menu-select`, which ship with a stock
 Omarchy installation. It makes direct HTTPS requests to ESPN's undocumented
 site JSON API. No account, API key, backend, telemetry, package installation,
 or elevated privilege is used.
@@ -103,8 +116,12 @@ Run deterministic provider coverage and the optional live integration check:
 
 ```sh
 tests/provider-fixtures.sh
+bash tests/reliability.sh
+node tests/panel-logic.mjs
 tests/smoke.sh
 ```
+
+Node.js is needed only for development tests, not to run the plugin.
 
 ## License
 

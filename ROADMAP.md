@@ -32,6 +32,9 @@ basketball, Premier League, and MLS.
 - Provider fixtures for every supported league and offline/error cases.
 - Targeted live refresh and reduced-motion score-change feedback.
 - Reversible favorite sorting, manual ordering, and idle bar priority.
+- Background kickoff discovery, local countdowns, and refreshing open details.
+- Immediate preferences with serialized saves independent of provider requests.
+- Atomic game caches, partial-catalog recovery, and per-team data age.
 
 ## Deliberately deferred
 

@@ -187,9 +187,10 @@ catalog_sports() {
 }
 
 refresh_catalog() {
-  local work sport path label part pid failed=0
+  local work sport path label part index failed=0
   work=$(mktemp -d "$CACHE_DIR/.catalog.XXXXXX") || return 1
   declare -a pids=()
+  declare -a sports=()
 
   while IFS= read -r sport; do
     path=$(espn_path "$sport") || continue
@@ -201,7 +202,8 @@ refresh_catalog() {
     part="$work/$sport.json"
     (
       fetch_json "$ESPN_ROOT/$path/teams?limit=1000" 12 \
-        | jq -c --arg sport "$sport" --arg league "$label" '
+        | jq -ce --arg sport "$sport" --arg league "$label" '
+          if (.sports[0].leagues[0].teams | type) != "array" then error("Invalid teams") else . end |
           [(.sports[0].leagues[0].teams // [])[:1000][].team
           | select((.id | tostring) | test("^[0-9]{1,12}$")) | {
             sport:$sport,
@@ -212,11 +214,26 @@ refresh_catalog() {
           }]'
     ) >"$part" &
     pids+=("$!")
+    sports+=("$sport")
   done < <(catalog_sports)
 
-  for pid in "${pids[@]}"; do
-    wait "$pid" || failed=1
+  for index in "${!pids[@]}"; do
+    if ! wait "${pids[index]}"; then
+      failed=$((failed + 1))
+      sport="${sports[index]}"
+      part="$work/$sport.json"
+      if valid_json_file "$CATALOG_FILE" "$MAX_CATALOG_CACHE_BYTES"; then
+        jq -c --arg sport "$sport" '[.[] | select(.sport == $sport)]' "$CATALOG_FILE" >"$part"
+      else
+        printf '[]\n' >"$part"
+      fi
+    fi
   done
+
+  if (( failed == ${#pids[@]} )); then
+    rm -rf "$work"
+    return 1
+  fi
 
   if ! jq -sc --argjson max "$MAX_CATALOG_TEAMS" \
       'add | map(select(.teamId and .teamName)) | unique_by(.sport + ":" + .teamId) | .[:$max]' \
@@ -226,6 +243,10 @@ refresh_catalog() {
     return 1
   fi
   mv -f "$work/teams.json" "$CATALOG_FILE"
+  # Retry partial catalogs soon while keeping successfully fetched leagues usable.
+  if (( failed > 0 )); then
+    touch -d "@$(( $(date +%s) - CATALOG_TTL + 300 ))" "$CATALOG_FILE"
+  fi
   rm -rf "$work"
   (( failed == 0 ))
 }
@@ -272,7 +293,7 @@ follow_team() {
   count=$(jq '.teams | length' <<<"$state")
   (( count < MAX_TEAMS )) || { notify "You can follow up to $MAX_TEAMS teams."; return 1; }
   updated=$(jq -c --argjson team "$team" '.teams += [$team | del(.league)]' <<<"$state")
-  write_state "$updated"
+  write_state "$updated" || return 1
   notify "Following $(jq -r '.teamName' <<<"$team")"
 }
 
@@ -305,7 +326,7 @@ add_team() {
 
   updated=$(jq -c --arg sport "$sport" --arg id "$team_id" --arg name "$name" --arg abbrev "$abbrev" \
     '.teams += [{sport:$sport, teamId:$id, teamName:$name, teamAbbrev:$abbrev}]' <<<"$state")
-  write_state "$updated"
+  write_state "$updated" || return 1
   notify "Following $name"
 }
 
@@ -318,7 +339,7 @@ remove_team() {
     '.teams |= map(select(.sport != $sport or .teamId != $id))
       | if .pinnedTeam != null and .pinnedTeam.sport == $sport and .pinnedTeam.teamId == $id
         then .pinnedTeam = null else . end' <<<"$state")
-  write_state "$updated"
+  write_state "$updated" || return 1
   rm -f "$CACHE_DIR/${sport}-${team_id}.json"
   notify "Stopped following $name"
 }
@@ -327,7 +348,7 @@ toggle_spoilers() {
   local state updated hidden
   state=$(read_state)
   updated=$(jq -c '.spoilersHidden = (.spoilersHidden | not)' <<<"$state")
-  write_state "$updated"
+  write_state "$updated" || return 1
   hidden=$(jq -r '.spoilersHidden' <<<"$updated")
   [[ $hidden == true ]] && notify "Scores hidden" || notify "Scores visible"
 }
@@ -337,7 +358,7 @@ cycle_sort() {
   state=$(read_state)
   updated=$(jq -c '.sortMode = (if .sortMode == "manual" then "next"
     elif .sortMode == "next" then "league" else "manual" end)' <<<"$state")
-  write_state "$updated"
+  write_state "$updated" || return 1
   mode=$(jq -r '.sortMode' <<<"$updated")
   notify "Sort: ${mode^}"
 }
@@ -357,7 +378,7 @@ move_team() {
         end
       end
   ' <<<"$state")
-  write_state "$updated"
+  write_state "$updated" || return 1
 }
 
 toggle_pin() {
@@ -369,7 +390,7 @@ toggle_pin() {
   updated=$(jq -c --arg sport "$sport" --arg id "$team_id" '
     if .pinnedTeam != null and .pinnedTeam.sport == $sport and .pinnedTeam.teamId == $id
     then .pinnedTeam = null else .pinnedTeam = {sport:$sport,teamId:$id} end' <<<"$state")
-  write_state "$updated"
+  write_state "$updated" || return 1
   if [[ $(jq -r '.pinnedTeam == null' <<<"$updated") == true ]]; then
     notify "Idle bar pin cleared"
   else
@@ -377,9 +398,20 @@ toggle_pin() {
   fi
 }
 
+stale_team() {
+  local team="$1" cache_file="$2"
+  if valid_json_file "$cache_file" "$MAX_TEAM_CACHE_BYTES" \
+      && jq -e '.teamId and (.schedule | type == "array")' "$cache_file" >/dev/null 2>&1; then
+    jq -c '. + {stale:true}' "$cache_file"
+  else
+    jq -c '. + {teamLogo:"",teamColor:"",teamAlternateColor:"",current:null,
+      upcoming:null,schedule:[],stale:true,updatedAt:null}' <<<"$team"
+  fi
+}
+
 team_detail() {
   local team="$1" no_cache="$2" sport team_id name abbrev path cache_file age payload regular
-  local season_year now league_cache league_payload league_age merged_payload
+  local season_year now league_cache league_payload league_age merged_payload normalized
   sport=$(jq -r '.sport' <<<"$team")
   team_id=$(jq -r '.teamId' <<<"$team")
   name=$(jq -r '.teamName' <<<"$team")
@@ -395,13 +427,9 @@ team_detail() {
     fi
   fi
 
-  if ! payload=$(fetch_json "$ESPN_ROOT/$path/teams/$team_id/schedule" 10); then
-    if valid_json_file "$cache_file" "$MAX_TEAM_CACHE_BYTES"; then
-      jq -c '. + {stale:true}' "$cache_file"
-      return
-    fi
-    jq -cn --arg sport "$sport" --arg id "$team_id" --arg name "$name" --arg abbrev "$abbrev" \
-      '{sport:$sport,teamId:$id,teamName:$name,teamAbbrev:$abbrev,teamLogo:"",teamColor:"",teamAlternateColor:"",current:null,upcoming:null,schedule:[],stale:true}'
+  if ! payload=$(fetch_json "$ESPN_ROOT/$path/teams/$team_id/schedule" 10) \
+      || ! jq -e 'type == "object" and (.events | type == "array")' <<<"$payload" >/dev/null 2>&1; then
+    stale_team "$team" "$cache_file"
     return
   fi
 
@@ -457,7 +485,7 @@ team_detail() {
     fi
   fi
 
-  jq -c --arg sport "$sport" --arg id "$team_id" --arg name "$name" --arg abbrev "$abbrev" \
+  if normalized=$(jq -ce --arg sport "$sport" --arg id "$team_id" --arg name "$name" --arg abbrev "$abbrev" \
     --argjson now "$now" --argjson maxUpcoming "$MAX_UPCOMING_GAMES" \
     --argjson maxSchedule "$MAX_TEAM_SCHEDULE_GAMES" '
       def epoch:
@@ -472,6 +500,7 @@ team_detail() {
         (if $isHome then $home else $away end) as $mine |
         (if $isHome then $away else $home end) as $other |
         {
+          id: (($event.id // "") | text(64)),
           state: (($event.competitions[0].status.type.state // "pre") | text(12)),
           detail: (($event.competitions[0].status.type.shortDetail // "Scheduled") | text(120)),
           isHome: $isHome,
@@ -519,9 +548,14 @@ team_detail() {
           else (($next.date | epoch) | strflocaltime("%a")) end)
         }) else null end),
         schedule:$schedule,
-        stale:false
+        stale:false, updatedAt:$now
       }
-    ' <<<"$payload" 2>/dev/null | bounded_output "$MAX_TEAM_CACHE_BYTES" | tee "$cache_file"
+    ' <<<"$payload" 2>/dev/null | bounded_output "$MAX_TEAM_CACHE_BYTES") \
+      && [[ -n $normalized ]] && write_cache "$cache_file" "$normalized" "$MAX_TEAM_CACHE_BYTES"; then
+    printf '%s\n' "$normalized"
+  else
+    stale_team "$team" "$cache_file"
+  fi
 }
 
 detail() {
@@ -586,31 +620,38 @@ detail() {
   fi
 }
 
+cached_slate() {
+  local cache_file="$1" stale="$2"
+  valid_json_file "$cache_file" "$MAX_SLATE_CACHE_BYTES" || return 1
+  jq -ce --argjson stale "$stale" '
+    if type == "array" then {games:.,updatedAt:null} else . end
+    | if (.games | type) != "array" then error("Invalid slate") else . end
+    | .stale = $stale | .games |= map(. + {stale:$stale})
+  ' "$cache_file"
+}
+
 slate_sport() {
-  local sport="$1" date_key="$2" force="$3" path label cache_file age payload
+  local sport="$1" date_key="$2" force="$3" path label cache_file age payload normalized
   path=$(espn_path "$sport") || return 1
   label=$(sport_label "$sport")
   cache_file="$CACHE_DIR/slate-${sport}-${date_key}.json"
 
   if [[ $force == false && -f $cache_file ]]; then
     age=$(( $(date +%s) - $(stat -c %Y "$cache_file") ))
-    if (( age < CACHE_TTL )) && valid_json_file "$cache_file" "$MAX_SLATE_CACHE_BYTES"; then
-      cat "$cache_file"
+    if (( age < CACHE_TTL )) && normalized=$(cached_slate "$cache_file" false); then
+      printf '%s\n' "$normalized"
       return
     fi
   fi
 
-  if ! payload=$(fetch_json "$ESPN_ROOT/$path/scoreboard?dates=$date_key&limit=500" 10); then
-    if valid_json_file "$cache_file" "$MAX_SLATE_CACHE_BYTES"; then
-      jq -c 'map(. + {stale:true})' "$cache_file"
-      return
-    fi
-    printf '%s\n' '[]'
+  if ! payload=$(fetch_json "$ESPN_ROOT/$path/scoreboard?dates=$date_key&limit=500" 10) \
+      || ! jq -e 'type == "object" and (.events | type == "array")' <<<"$payload" >/dev/null 2>&1; then
+    cached_slate "$cache_file" true || printf '%s\n' '{"games":[],"stale":true,"updatedAt":null}'
     return
   fi
 
-  jq -c --arg sport "$sport" --arg league "$label" \
-    --argjson max "$MAX_SLATE_GAMES_PER_LEAGUE" '
+  if normalized=$(jq -ce --arg sport "$sport" --arg league "$label" \
+    --argjson now "$(date +%s)" --argjson max "$MAX_SLATE_GAMES_PER_LEAGUE" '
       def epoch:
       (if test("T[0-9]{2}:[0-9]{2}Z$") then sub("Z$"; ":00Z") else . end)
       | try fromdateiso8601 catch 0;
@@ -643,12 +684,18 @@ slate_sport() {
     | sort_by(.rank, .date)
     | .[:$max]
     | map(del(.rank))
-  ' <<<"$payload" | bounded_output "$MAX_SLATE_CACHE_BYTES" | tee "$cache_file"
+    | {games:.,stale:false,updatedAt:$now}
+  ' <<<"$payload" 2>/dev/null | bounded_output "$MAX_SLATE_CACHE_BYTES") \
+      && [[ -n $normalized ]] && write_cache "$cache_file" "$normalized" "$MAX_SLATE_CACHE_BYTES"; then
+    printf '%s\n' "$normalized"
+  else
+    cached_slate "$cache_file" true || printf '%s\n' '{"games":[],"stale":true,"updatedAt":null}'
+  fi
 }
 
 full_slate() {
   local force=false state hidden date_key sport games item stale=false
-  local -a parts=()
+  local -a parts=() failed_leagues=()
   [[ ${1:-} == "--no-cache" ]] && force=true
   state=$(read_state)
   hidden=$(jq -r '.spoilersHidden' <<<"$state")
@@ -656,9 +703,12 @@ full_slate() {
 
   while IFS= read -r sport; do
     [[ -n $sport ]] || continue
-    item=$(slate_sport "$sport" "$date_key" "$force") || item='[]'
-    [[ $(jq -r 'any(.[]; .stale == true)' <<<"$item") == true ]] && stale=true
-    parts+=("$item")
+    item=$(slate_sport "$sport" "$date_key" "$force") || item='{"games":[],"stale":true}'
+    if [[ $(jq -r '.stale' <<<"$item") == true ]]; then
+      stale=true
+      failed_leagues+=("$(sport_label "$sport")")
+    fi
+    parts+=("$(jq -c '.games' <<<"$item")")
   done < <(jq -r '.teams | map(.sport) | unique[]' <<<"$state")
 
   if ((${#parts[@]})); then
@@ -670,10 +720,21 @@ full_slate() {
     games='[]'
   fi
   jq -cn --arg date "$date_key" --argjson hidden "$hidden" --argjson stale "$stale" \
+    --argjson failedLeagues "$(printf '%s\n' "${failed_leagues[@]}" | jq -Rsc 'split("\n") | map(select(length > 0))')" \
     --argjson games "$games" \
-    '{date:$date,spoilersHidden:$hidden,stale:$stale,games:$games,leagues:($games | map(.league) | unique)}' \
+    '{date:$date,spoilersHidden:$hidden,stale:$stale,failedLeagues:$failedLeagues,
+      games:$games,leagues:($games | map(.league) | unique)}' \
     | bounded_output "$MAX_QML_OUTPUT_BYTES"
 }
+
+# Serialize read/modify/write preferences even when separate plugin processes overlap.
+case "${1:-}" in
+  add|follow|remove|toggle-spoilers|cycle-sort|move|toggle-pin)
+    ensure_storage
+    exec 9>"$STATE_DIR/.omathlete.lock"
+    /usr/bin/flock -w 30 9 || exit 1
+    ;;
+esac
 
 case "${1:-}" in
   add) add_team ;;
@@ -692,3 +753,10 @@ case "${1:-}" in
     exit 2
     ;;
 esac
+result=$?
+case "${1:-}" in
+  add|follow|remove|toggle-spoilers|cycle-sort|move|toggle-pin)
+    (( result == 0 )) && read_state
+    ;;
+esac
+exit "$result"

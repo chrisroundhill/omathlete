@@ -3,6 +3,7 @@ import Quickshell
 import Quickshell.Io
 import qs.Commons
 import qs.Ui
+import "PanelLogic.js" as Logic
 
 Panel {
   id: root
@@ -12,6 +13,14 @@ Panel {
   property var anchorItem: null
   property var hostWidget: null
   property var report: ({ teams: [], spoilersHidden: false, sortMode: "manual", pinnedTeam: null, stale: false })
+  property var savedPreferences: ({teams: [], spoilersHidden: true, sortMode: "manual", pinnedTeam: null})
+  property var preferenceQueue: []
+  property bool preferencesReady: false
+  property var preferences: ({teams: [], spoilersHidden: true, sortMode: "manual", pinnedTeam: null})
+  property double now: Date.now()
+  property double lastRefreshAt: 0
+  property bool refreshPending: false
+  property bool forceRefreshPending: false
   property bool busy: false
   property string errorMessage: ""
   property int selectedIndex: 0
@@ -21,20 +30,23 @@ Panel {
   property int searchSelectedIndex: 0
   property string requestedQuery: ""
   property bool teamDetailOpen: false
-  property var detailTeam: null
+  property var detailTeamKey: null
+  readonly property var detailTeam: findTeam(detailTeamKey)
   property int gameSelectedIndex: 0
   property bool fullSlateOpen: false
   property bool slateBusy: false
   property var slateGames: []
+  property bool slateStale: false
+  property string slateError: ""
   property int slateSelectedIndex: 0
   property int liveBarIndex: 0
   property var scoreFlashTeams: ({})
   property string pendingSelectionKey: ""
 
-  readonly property string sortMode: report.sortMode || "manual"
-  readonly property var pinnedTeam: report.pinnedTeam || null
+  readonly property string sortMode: preferences.sortMode
+  readonly property var pinnedTeam: preferences.pinnedTeam
   readonly property var teams: sortedTeams(report.teams || [])
-  readonly property bool spoilersHidden: report.spoilersHidden === true
+  readonly property bool spoilersHidden: !preferencesReady || preferences.spoilersHidden
   readonly property var liveTeams: {
     var result = []
     for (var i = 0; i < teams.length; i++) {
@@ -44,7 +56,7 @@ Panel {
   }
   readonly property var barTeam: liveTeams.length > 0
     ? liveTeams[liveBarIndex % liveTeams.length]
-    : (findTeam(pinnedTeam) || report.primary || (teams.length > 0 ? teams[0] : null))
+    : (findTeam(pinnedTeam) || nextBarTeam() || (teams.length > 0 ? teams[0] : null))
   readonly property bool barLive: !!barTeam && !!barTeam.current && barTeam.current.state === "in"
   readonly property string backend: decodeURIComponent(
     String(Qt.resolvedUrl(".")).replace(/^file:\/\//, "")) + "bin/omathlete"
@@ -58,14 +70,24 @@ Panel {
     }
     if (barTeam.upcoming) return barTeam.teamAbbrev
       + (barTeam.upcoming.isHome ? " vs " : " @ ") + barTeam.upcoming.opponent
-      + " · " + (barTeam.upcoming.relative || "next")
+      + " · " + Logic.countdown(barTeam.upcoming.date, root.now)
     return ""
   }
   readonly property string tooltipText: barLabel
     ? "Omathlete · " + barLabel + (spoilersHidden ? " · scores hidden" : "")
     : "Omathlete · your teams"
 
-  Component.onCompleted: root.refresh(false)
+  Component.onCompleted: {
+    stateProcess.running = true
+    root.refresh(false)
+  }
+
+  onSpoilersHiddenChanged: {
+    if (spoilersHidden) {
+      scoreFlashTeams = ({})
+      scoreFlashTimer.stop()
+    }
+  }
 
   onSelectedIndexChanged: Qt.callLater(function() { root.ensureItemVisible(teamRepeater.itemAt(root.selectedIndex)) })
   onSearchSelectedIndexChanged: Qt.callLater(function() { root.ensureItemVisible(searchRepeater.itemAt(root.searchSelectedIndex)) })
@@ -98,7 +120,12 @@ Panel {
   }
 
   function sortedTeams(source) {
-    var result = source.slice()
+    var result = []
+    for (var p = 0; p < preferences.teams.length; p++) {
+      for (var s = 0; s < source.length; s++)
+        if (teamKey(preferences.teams[p]) === teamKey(source[s])) result.push(source[s])
+    }
+    var manual = result.slice()
     var leagueOrder = {nfl:0, nba:1, wnba:2, mlb:3, nhl:4, cfb:5, cbb:6, epl:7, mls:8}
     if (sortMode === "next") {
       result.sort(function(first, second) {
@@ -107,16 +134,61 @@ Panel {
         if (firstLive !== secondLive) return firstLive ? -1 : 1
         var firstDate = first.upcoming ? Date.parse(first.upcoming.date) : Number.MAX_VALUE
         var secondDate = second.upcoming ? Date.parse(second.upcoming.date) : Number.MAX_VALUE
-        return firstDate - secondDate || source.indexOf(first) - source.indexOf(second)
+        return firstDate - secondDate || manual.indexOf(first) - manual.indexOf(second)
       })
     } else if (sortMode === "league") {
       result.sort(function(first, second) {
         return (leagueOrder[first.sport] === undefined ? 99 : leagueOrder[first.sport])
           - (leagueOrder[second.sport] === undefined ? 99 : leagueOrder[second.sport])
-          || source.indexOf(first) - source.indexOf(second)
+          || manual.indexOf(first) - manual.indexOf(second)
       })
     }
     return result
+  }
+
+  function nextBarTeam() {
+    var next = null
+    for (var i = 0; i < teams.length; i++)
+      if (teams[i].upcoming && (!next || Date.parse(teams[i].upcoming.date) < Date.parse(next.upcoming.date)))
+        next = teams[i]
+    return next
+  }
+
+  function queuePreference(command, team) {
+    if (!preferencesReady) return
+    pendingSelectionKey = teamKey(teams[selectedIndex])
+    preferenceQueue = preferenceQueue.concat([{command: command, team: team || null}])
+    preferences = Logic.projectedPreferences(savedPreferences, preferenceQueue)
+    restoreSelection()
+    startPreference()
+  }
+
+  function startPreference() {
+    if (preferenceProcess.running || preferenceQueue.length === 0) return
+    preferenceProcess.result = null
+    preferenceProcess.command = [root.backend].concat(preferenceQueue[0].command)
+    preferenceProcess.running = true
+  }
+
+  function finishPreference(exitCode, result) {
+    var action = preferenceQueue[0]
+    pendingSelectionKey = teamKey(teams[selectedIndex])
+    if (exitCode === 0 && result) savedPreferences = Logic.preferences(result)
+    else errorMessage = "Could not save preference · please retry"
+    preferenceQueue = preferenceQueue.slice(1)
+    preferences = Logic.projectedPreferences(savedPreferences, preferenceQueue)
+    restoreSelection()
+    if (action && (action.command[0] === "follow" || action.command[0] === "remove"))
+      refresh(false)
+    Qt.callLater(root.startPreference)
+  }
+
+  function tick() {
+    now = Date.now()
+    if (now - lastRefreshAt >= Logic.refreshInterval(teams, root.opened, now)) {
+      refresh(false)
+      if (fullSlateOpen) refreshSlate(false)
+    }
   }
 
   function restoreSelection() {
@@ -182,7 +254,12 @@ Panel {
   }
 
   function refresh(force) {
-    if (detailProcess.running) return
+    if (detailProcess.running) {
+      refreshPending = true
+      forceRefreshPending = forceRefreshPending || force
+      return
+    }
+    lastRefreshAt = Date.now()
     busy = true
     errorMessage = ""
     detailProcess.command = force ? [root.backend, "detail", "--no-cache"] : [root.backend, "detail"]
@@ -200,6 +277,9 @@ Panel {
   }
 
   function adoptReport(nextReport) {
+    var selectedKey = teamKey(teams[selectedIndex])
+    var oldGames = detailTeam ? detailTeam.schedule || [] : []
+    var selectedGame = Logic.gameKey(oldGames[gameSelectedIndex])
     var changed = ({})
     if (!spoilersHidden) {
       var previousTeams = report.teams || []
@@ -219,6 +299,10 @@ Panel {
       }
     }
     report = nextReport
+    pendingSelectionKey = selectedKey
+    restoreSelection()
+    gameSelectedIndex = Logic.selectedGameIndex(detailTeam ? detailTeam.schedule || [] : [],
+      selectedGame, gameSelectedIndex)
     if (Object.keys(changed).length > 0) {
       scoreFlashTeams = changed
       scoreFlashTimer.restart()
@@ -258,48 +342,43 @@ Panel {
   }
 
   function followSearchResult() {
-    if (searchResults.length === 0 || followProcess.running) return
+    if (searchResults.length === 0) return
     var result = searchResults[Math.max(0, Math.min(searchSelectedIndex, searchResults.length - 1))]
-    followProcess.command = [root.backend, "follow", result.sport, result.teamId]
-    followProcess.running = true
+    queuePreference(["follow", result.sport, result.teamId], result)
+    closeSearch()
   }
 
   function removeSelected() {
-    if (teams.length === 0 || removeProcess.running) return
+    if (teams.length === 0) return
     var team = teams[Math.max(0, Math.min(selectedIndex, teams.length - 1))]
-    removeProcess.command = [root.backend, "remove", team.sport, team.teamId]
-    removeProcess.running = true
+    queuePreference(["remove", team.sport, team.teamId])
+    selectedIndex = Math.min(selectedIndex, Math.max(0, teams.length - 1))
   }
 
   function toggleSpoilers() {
-    if (!spoilerProcess.running) spoilerProcess.running = true
+    queuePreference(["toggle-spoilers"])
   }
 
   function cycleSort() {
-    if (sortProcess.running) return
-    pendingSelectionKey = teamKey(teams[Math.max(0, Math.min(selectedIndex, teams.length - 1))])
-    sortProcess.running = true
+    queuePreference(["cycle-sort"])
   }
 
   function moveSelected(direction) {
-    if (sortMode !== "manual" || teams.length === 0 || moveProcess.running) return
+    if (sortMode !== "manual" || teams.length === 0) return
     var team = teams[Math.max(0, Math.min(selectedIndex, teams.length - 1))]
-    pendingSelectionKey = teamKey(team)
-    moveProcess.command = [root.backend, "move", team.sport, team.teamId, String(direction)]
-    moveProcess.running = true
+    queuePreference(["move", team.sport, team.teamId, String(direction)])
   }
 
   function togglePinSelected() {
-    if (teams.length === 0 || pinProcess.running) return
+    if (teams.length === 0) return
     var team = teams[Math.max(0, Math.min(selectedIndex, teams.length - 1))]
-    pendingSelectionKey = teamKey(team)
-    pinProcess.command = [root.backend, "toggle-pin", team.sport, team.teamId]
-    pinProcess.running = true
+    queuePreference(["toggle-pin", team.sport, team.teamId])
   }
 
   function openTeamDetail() {
     if (teams.length === 0) return
-    detailTeam = teams[Math.max(0, Math.min(selectedIndex, teams.length - 1))]
+    var team = teams[Math.max(0, Math.min(selectedIndex, teams.length - 1))]
+    detailTeamKey = {sport: team.sport, teamId: team.teamId}
     gameSelectedIndex = 0
     teamDetailOpen = true
   }
@@ -334,7 +413,7 @@ Panel {
 
   function closeTeamDetail() {
     teamDetailOpen = false
-    detailTeam = null
+    detailTeamKey = null
     keyCatcher.forceActiveFocus()
   }
 
@@ -369,13 +448,22 @@ Panel {
     onExited: function(exitCode) {
       root.busy = false
       if (exitCode !== 0 && root.teams.length === 0) root.errorMessage = "Scores unavailable"
+      if (root.refreshPending) {
+        var force = root.forceRefreshPending
+        root.refreshPending = false
+        root.forceRefreshPending = false
+        Qt.callLater(function() { root.refresh(force) })
+      }
     }
   }
 
   Process {
     id: addProcess
     command: [root.backend, "add"]
-    onExited: root.refresh(true)
+    onExited: {
+      stateProcess.running = true
+      root.refresh(true)
+    }
   }
 
   Timer {
@@ -419,43 +507,33 @@ Panel {
   }
 
   Process {
-    id: followProcess
-    onExited: function(exitCode) {
-      if (exitCode === 0) {
-        root.closeSearch()
-        root.refresh(true)
+    id: stateProcess
+    command: [root.backend, "state"]
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        try {
+          root.savedPreferences = Logic.preferences(JSON.parse(String(text)))
+          root.preferences = Logic.projectedPreferences(root.savedPreferences, root.preferenceQueue)
+          root.preferencesReady = true
+        } catch (error) { root.errorMessage = "Could not read preferences" }
       }
     }
   }
 
   Process {
-    id: removeProcess
-    onExited: root.refresh(true)
-  }
-
-  Process {
-    id: spoilerProcess
-    command: [root.backend, "toggle-spoilers"]
-    onExited: {
-      root.refresh(false)
-      if (root.fullSlateOpen) root.refreshSlate(false)
+    id: preferenceProcess
+    property var result: null
+    stdout: StdioCollector {
+      waitForEnd: true
+      onStreamFinished: {
+        try { preferenceProcess.result = JSON.parse(String(text)) }
+        catch (error) { preferenceProcess.result = null }
+      }
     }
-  }
-
-  Process {
-    id: sortProcess
-    command: [root.backend, "cycle-sort"]
-    onExited: root.refresh(false)
-  }
-
-  Process {
-    id: moveProcess
-    onExited: root.refresh(false)
-  }
-
-  Process {
-    id: pinProcess
-    onExited: root.refresh(false)
+    onExited: function(exitCode) {
+      root.finishPreference(exitCode, preferenceProcess.result)
+    }
   }
 
   Process {
@@ -466,26 +544,30 @@ Panel {
         try {
           var slate = JSON.parse(String(text || "{}"))
           root.slateGames = slate.games || []
+          root.slateStale = slate.stale === true
+          root.slateError = (slate.failedLeagues || []).length > 0
+            ? "Couldn't update " + slate.failedLeagues.join(", ") + " · r to retry" : ""
           root.slateSelectedIndex = Math.min(root.slateSelectedIndex,
             Math.max(0, root.slateGames.length - 1))
         } catch (error) {
-          root.slateGames = []
+          root.slateStale = true
+          root.slateError = "Couldn't load games · r to retry"
         }
       }
     }
-    onExited: root.slateBusy = false
+    onExited: function(exitCode) {
+      root.slateBusy = false
+      if (exitCode !== 0) root.slateError = "Couldn't load games · r to retry"
+    }
   }
 
   Process { id: browserProcess }
 
   Timer {
-    interval: 60 * 1000
+    interval: 15 * 1000
     repeat: true
-    running: root.opened
-    onTriggered: {
-      root.refresh(false)
-      if (root.fullSlateOpen) root.refreshSlate(false)
-    }
+    running: true
+    onTriggered: root.tick()
   }
 
 
@@ -554,6 +636,9 @@ Panel {
             event.accepted = true
           } else if (event.key === Qt.Key_S) {
             root.toggleSpoilers()
+            event.accepted = true
+          } else if (event.key === Qt.Key_R) {
+            root.refresh(true)
             event.accepted = true
           }
         } else if ((event.modifiers & Qt.ShiftModifier)
@@ -673,9 +758,10 @@ Panel {
           }
 
           Text {
-            visible: (root.busy && root.teams.length > 0) || root.report.stale
+            visible: !!root.errorMessage || (root.busy && root.teams.length > 0) || root.report.stale
             width: parent.width - Style.space(28)
-            text: root.busy ? "↻ Refreshing scores" : "Showing cached scores · r to retry"
+            text: root.errorMessage || (root.busy ? "↻ Refreshing scores" : "Some teams couldn't update · r to retry")
+            wrapMode: Text.WordWrap
             color: root.report.stale ? Color.urgent : Qt.darker(root.barForeground, 1.35)
             font.family: root.bar ? root.bar.fontFamily : Style.font.family
             font.pixelSize: Style.font.caption
@@ -868,6 +954,16 @@ Panel {
             spacing: Style.space(4)
 
             Text {
+              visible: !!root.slateError
+              width: parent.width
+              text: root.slateError
+              textFormat: Text.PlainText
+              wrapMode: Text.WordWrap
+              color: Color.urgent
+              font.pixelSize: Style.font.caption
+            }
+
+            Text {
               visible: root.slateBusy && root.slateGames.length === 0
               text: "Loading today's games…"
               color: root.barForeground
@@ -880,6 +976,7 @@ Panel {
               width: parent.width
               text: root.teams.length === 0
                 ? "Follow a team to choose which leagues appear here."
+                : root.slateStale || root.slateError ? "Games unavailable. Press r to retry."
                 : "No games today in your teams' leagues."
               color: root.barForeground
               wrapMode: Text.WordWrap
@@ -933,7 +1030,7 @@ Panel {
                     width: parent.width
                     text: modelData.state === "pre"
                       ? modelData.when + (modelData.broadcast ? " · " + modelData.broadcast : "")
-                      : modelData.detail
+                      : Logic.statusText(modelData, root.spoilersHidden)
                     color: Qt.darker(root.barForeground, 1.25)
                     elide: Text.ElideRight
                     font.family: root.bar ? root.bar.fontFamily : Style.font.family
@@ -959,9 +1056,19 @@ Panel {
             spacing: Style.space(6)
 
             Text {
+              width: parent.width
+              text: Logic.freshness(root.detailTeam, root.now)
+              visible: text !== ""
+              color: root.detailTeam && root.detailTeam.stale ? Color.urgent : root.barForeground
+              wrapMode: Text.WordWrap
+              font.pixelSize: Style.font.caption
+            }
+
+            Text {
               visible: root.detailTeam && (!root.detailTeam.schedule || root.detailTeam.schedule.length === 0)
               width: parent.width
-              text: "No recent or upcoming games found."
+              text: root.detailTeam && root.detailTeam.stale
+                ? "Games unavailable. Press r to retry." : "No recent or upcoming games found."
               color: root.barForeground
               wrapMode: Text.WordWrap
               font.family: root.bar ? root.bar.fontFamily : Style.font.family
@@ -1018,7 +1125,7 @@ Panel {
                     text: modelData.when
                       + (modelData.kind === "upcoming"
                         ? " · " + (modelData.broadcast || "TV TBA")
-                        : " · " + modelData.detail
+                        : " · " + Logic.statusText(modelData, root.spoilersHidden)
                           + (modelData.broadcast ? " · " + modelData.broadcast : ""))
                     color: Qt.darker(root.barForeground, 1.25)
                     elide: Text.ElideRight
@@ -1153,9 +1260,9 @@ Panel {
                     width: parent.width
                     text: {
                       var game = modelData.current
-                      if (!game) return "No recent game"
+                      if (!game) return modelData.stale && !modelData.updatedAt ? "Games unavailable" : "No recent game"
                       var score = root.spoilersHidden ? "" : " · " + game.teamScore + "–" + game.opponentScore
-                      return (game.isHome ? "vs " : "@ ") + game.opponent + score + " · " + game.detail
+                      return (game.isHome ? "vs " : "@ ") + game.opponent + score + " · " + Logic.statusText(game, root.spoilersHidden)
                     }
                     color: root.barForeground
                     elide: Text.ElideRight
@@ -1191,6 +1298,15 @@ Panel {
                       font.pixelSize: Style.font.bodySmall
                       font.bold: true
                     }
+                  }
+                  Text {
+                    width: parent.width
+                    text: Logic.freshness(modelData, root.now)
+                    visible: text !== ""
+                    color: modelData.stale ? Color.urgent : root.barForeground
+                    wrapMode: Text.WordWrap
+                    font.family: root.bar ? root.bar.fontFamily : Style.font.family
+                    font.pixelSize: Style.font.caption
                   }
                 }
               }
@@ -1229,7 +1345,7 @@ Panel {
             : root.fullSlateOpen
               ? "a my teams   j/k move   o open ESPN   s spoilers   r refresh"
               : root.teamDetailOpen
-                ? "j/k move   o open ESPN   s spoilers   h/esc back"
+                ? "j/k move   o open ESPN   s spoilers   r refresh   h/esc back"
                 : "/ search   a slate   j/k move   o sort   p pin   enter details"
                   + (root.sortMode === "manual" ? "   shift+j/k reorder" : "")
                   + "   x remove   s spoilers"
