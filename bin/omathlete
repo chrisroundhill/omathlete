@@ -193,11 +193,7 @@ refresh_catalog() {
 
   while IFS= read -r sport; do
     path=$(espn_path "$sport") || continue
-    case "$sport" in
-      nfl) label="NFL" ;; nba) label="NBA" ;; wnba) label="WNBA" ;;
-      mlb) label="MLB" ;; nhl) label="NHL" ;; cfb) label="College Football" ;;
-      cbb) label="College Basketball" ;; epl) label="Premier League" ;; mls) label="MLS" ;;
-    esac
+    label=$(sport_label "$sport")
     part="$work/$sport.json"
     (
       fetch_json "$ESPN_ROOT/$path/teams?limit=1000" 12 \
@@ -526,7 +522,7 @@ team_detail() {
 
 detail() {
   local no_cache=false live_only=false state spoilers sort_mode pinned count index team item key requested
-  local work pid force_team stale=false
+  local work pid force_team stale=false running=0 max_jobs=8
   local -a items=() live_keys=() pids=()
   if [[ ${1:-} == "--no-cache" ]]; then
     no_cache=true
@@ -553,8 +549,9 @@ detail() {
     fi
     (team_detail "$team" "$force_team" >"$work/$index.json") &
     pids[index]=$!
+    (( ++running >= max_jobs )) && { wait -n 2>/dev/null || true; (( --running )); }
   done
-  for pid in "${pids[@]}"; do wait "$pid" || true; done
+  for pid in "${pids[@]}"; do wait "$pid" 2>/dev/null || true; done
   for ((index=0; index<count; index++)); do
     [[ -s $work/$index.json ]] || continue
     item=$(cat "$work/$index.json")
