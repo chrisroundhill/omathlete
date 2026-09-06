@@ -22,13 +22,20 @@ Item {
     border.color: Qt.rgba(root.accentColor.r, root.accentColor.g, root.accentColor.b, 0.7)
   }
 
+  function getLogoSource(url) {
+    if (!url) return ""
+    var str = String(url)
+    if (str.indexOf("/soccer/") !== -1 || str.indexOf("/countries/") !== -1) return str
+    if (logo.useOptimizedSource) return str.replace("/500/", "/500/scoreboard/")
+    return str
+  }
+
   Image {
     id: logo
     property bool useOptimizedSource: true
     anchors.fill: parent
     anchors.margins: Style.space(3)
-    source: useOptimizedSource
-      ? root.logoUrl.replace("/500/", "/500/scoreboard/") : root.logoUrl
+    source: root.getLogoSource(root.logoUrl)
     sourceSize: Qt.size(width * 2, height * 2)
     asynchronous: true
     fillMode: Image.PreserveAspectFit
