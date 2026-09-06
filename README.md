@@ -114,6 +114,9 @@ Team details include home/away location, venue, and overall team/opponent record
 when ESPN supplies them. Records are hidden whenever that game's result is
 protected, including saved watch-later games. Missing TV information means ESPN
 did not supply a network; it does not mean the game is untelevised.
+Live scores use ESPN's daily scoreboard because team schedules can report the
+current inning/clock without scores. A missing score displays `?`, not zero;
+stale scoreboard results are not substituted as current scores.
 
 Team View distinguishes loading, cached fallback, unavailable data, and a
 successful response with no upcoming fixtures. An empty schedule is not proof

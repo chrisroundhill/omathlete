@@ -98,6 +98,15 @@ try {
   assert.ok(detail.teams[0].schedule.length <= 5);
   assert.equal(detail.teams[0].schedule[0].venue,'Fixture Stadium');
   assert.equal(detail.teams[0].schedule[0].teamRecord,'10-5');
+  const missingScoresEnv = {OMATHLETE_CURL_BIN:path.join(repo,'tests/fixture-curl'),
+    OMATHLETE_FIXTURE_CURRENT_DATES:'1',OMATHLETE_FIXTURE_MISSING_LIVE_SCORES:'1'};
+  const liveDetail = run(['detail','--no-cache'],missingScoresEnv).teams[0];
+  assert.equal(liveDetail.current.teamScore,'14','Live scoreboard fills absent schedule scores');
+  assert.equal(liveDetail.current.opponentScore,'7');
+  assert.equal(liveDetail.agenda.find(g=>g.id===liveDetail.current.id).teamScore,'14');
+  const noScoreboard = run(['detail','--no-cache'],{...missingScoresEnv,OMATHLETE_FIXTURE_SCOREBOARD_FAILURE:'1'}).teams[0];
+  assert.equal(noScoreboard.current.teamScore,'?','Missing score never becomes a fabricated zero or stale score');
+  assert.equal(noScoreboard.current.opponentScore,'?');
   const context = {...game,venue:'Fixture Stadium',teamRecord:'10-5',opponentRecord:'8-7'};
   assert.equal(logic.contrastingInk({r:1,g:1,b:1}),'#000000');
   assert.equal(logic.contrastingInk({r:0,g:0,b:0}),'#ffffff');

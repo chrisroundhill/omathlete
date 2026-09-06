@@ -416,6 +416,7 @@ stale_team() {
 team_detail() {
   local team="$1" no_cache="$2" sport team_id name abbrev path cache_file age payload regular
   local season_year now league_cache league_payload league_age merged_payload normalized
+  local live_date live_scores='{"games":[]}'
   sport=$(jq -r '.sport' <<<"$team")
   team_id=$(jq -r '.teamId' <<<"$team")
   name=$(jq -r '.teamName' <<<"$team")
@@ -489,7 +490,21 @@ team_detail() {
     fi
   fi
 
+  # Team schedules can update the inning/clock while omitting live scores.
+  # Reuse the bounded daily scoreboard, matching exact event IDs below.
+  live_date=$(jq -r --argjson now "$now" '
+    [.events[] | select(.competitions[0].status.type.state == "in")
+      | .date | select(type == "string")
+      | (if test("T[0-9]{2}:[0-9]{2}Z$") then sub("Z$"; ":00Z") else . end)
+      | select((try fromdateiso8601 catch 0) >= ($now - 86400)
+        and (try fromdateiso8601 catch 0) <= ($now + 3600))]
+    | sort | last // "" | .[:10] | gsub("-"; "")' <<<"$payload" 2>/dev/null) || live_date=""
+  if [[ $live_date =~ ^[0-9]{8}$ ]]; then
+    live_scores=$(slate_sport "$sport" "$live_date" "$no_cache") || live_scores='{"games":[]}'
+  fi
+
   if normalized=$(jq -ce --arg sport "$sport" --arg id "$team_id" --arg name "$name" --arg abbrev "$abbrev" \
+    --argjson liveScores "$live_scores" \
     --argjson now "$now" --argjson maxUpcoming "$MAX_UPCOMING_GAMES" \
     --argjson maxSchedule "$MAX_TEAM_SCHEDULE_GAMES" '
       def epoch:
@@ -503,21 +518,24 @@ team_detail() {
         ($home.team.id == $id) as $isHome |
         (if $isHome then $home else $away end) as $mine |
         (if $isHome then $away else $home end) as $other |
+        ([$liveScores.games[]? | select(.id == ($event.id | tostring) and .stale != true)][0]) as $liveScore |
         {
           id: (($event.id // "") | text(64)),
           homeTeam: (($home.team.abbreviation // $home.team.displayName // "TBD") | text(40)),
           awayTeam: (($away.team.abbreviation // $away.team.displayName // "TBD") | text(40)),
-          state: (($event.competitions[0].status.type.state // "pre") | text(12)),
-          detail: (($event.competitions[0].status.type.shortDetail // "Scheduled") | text(120)),
+          state: (($liveScore.state // $event.competitions[0].status.type.state // "pre") | text(12)),
+          detail: (($liveScore.detail // $event.competitions[0].status.type.shortDetail // "Scheduled") | text(120)),
           isHome: $isHome,
           venue: (($event.competitions[0].venue.fullName // "") | text(120)),
           teamRecord: (([$mine.records[]? | select(.type == "total" or .name == "overall") | .summary][0] // "") | text(40)),
           opponentRecord: (([$other.records[]? | select(.type == "total" or .name == "overall") | .summary][0] // "") | text(40)),
           opponent: (($other.team.abbreviation // $other.team.displayName // "TBD") | text(40)),
-          teamScore: (if ($mine.score | type) == "object"
-            then (($mine.score.displayValue // "0") | text(20)) else (($mine.score // "0") | text(20)) end),
-          opponentScore: (if ($other.score | type) == "object"
-            then (($other.score.displayValue // "0") | text(20)) else (($other.score // "0") | text(20)) end),
+          teamScore: ((if $liveScore then (if $isHome then $liveScore.homeScore else $liveScore.awayScore end)
+            elif ($mine.score | type) == "object" then ($mine.score.displayValue // $mine.score.value)
+            else $mine.score end) // "?" | text(20)),
+          opponentScore: ((if $liveScore then (if $isHome then $liveScore.awayScore else $liveScore.homeScore end)
+            elif ($other.score | type) == "object" then ($other.score.displayValue // $other.score.value)
+            else $other.score end) // "?" | text(20)),
           date: ($event.date | text(64)),
           when: (($event.date | epoch) | strflocaltime("%a, %b %-d · %-I:%M %p")),
           broadcast: (($event.competitions[0].broadcasts[0].media.shortName
@@ -744,8 +762,8 @@ slate_sport() {
           id:($event.id | text(64)), sport:$sport, league:$league,
           homeTeam:(($home.team.abbreviation // $home.team.shortDisplayName // "TBD") | text(40)),
           awayTeam:(($away.team.abbreviation // $away.team.shortDisplayName // "TBD") | text(40)),
-          homeScore:(($home.score // "0") | text(20)),
-          awayScore:(($away.score // "0") | text(20)),
+          homeScore:(($home.score // "?") | text(20)),
+          awayScore:(($away.score // "?") | text(20)),
           state:(($event.competitions[0].status.type.state // "pre") | text(12)),
           detail:(($event.competitions[0].status.type.shortDetail // "Scheduled") | text(120)),
           date:($event.date | text(64)),

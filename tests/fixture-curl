@@ -6,6 +6,7 @@ url="${!#}"
 
 [[ " $* " == *" --compressed "* && " $* " == *" --max-time "* ]] || exit 22
 [[ ${OMATHLETE_FIXTURE_FAILURE:-0} != 1 ]] || exit 22
+if [[ ${OMATHLETE_FIXTURE_SCOREBOARD_FAILURE:-0} == 1 && $url == *'/scoreboard'* ]]; then exit 22; fi
 [[ ${OMATHLETE_FIXTURE_MALFORMED:-0} != 1 ]] || { printf '{not-json'; exit 0; }
 
 # The test double writes what curl would expose after --compressed decoding.
@@ -112,6 +113,8 @@ jq -cn --argjson team "$team" --arg url "$url" '
       | .events[1].date = ((now + 3600) | strftime("%Y-%m-%dT%H:%M:%SZ"))
     else . end
   | if (env.OMATHLETE_FIXTURE_EMPTY_EVENTS // "0") == "1" then .events = [] else . end
+  | if (env.OMATHLETE_FIXTURE_MISSING_LIVE_SCORES // "0") == "1" and ($url | contains("/teams/"))
+    then .events[0].competitions[0].competitors |= map(del(.score)) else . end
   | if ($url | contains("/scoreboard"))
     then .events[].competitions[0].competitors[].score |= .displayValue
     else . end
