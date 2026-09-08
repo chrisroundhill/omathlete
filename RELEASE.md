@@ -23,10 +23,11 @@ no matching private-key or common access-token patterns. This is not an audit.
 - [ ] Remove first/middle/last Watch Later entries; selection remains visible and results stay protected.
 - [ ] Verify reminder Off / 15m before / At start, quiet hours, and no duplicate notification after reload.
 - [ ] Confirm compact horizontal spacing and a usable vertical stale indicator.
-- [ ] Capture updated `preview.png` and an Agenda screenshot with no private desktop content.
+- [x] Capture updated `preview.png` with no private desktop content (user supplied, 2026-09-08).
+- [ ] Capture an additional Agenda screenshot (optional promotional material).
 - [ ] Record a short keyboard-only demonstration; include spoiler mode and reminders.
 
-The existing preview remains in place until a reviewed replacement is available.
+The updated preview shows the current home view and compact horizontal bar.
 Do not publish a whole-desktop capture containing unrelated applications.
 
 ## Promotion

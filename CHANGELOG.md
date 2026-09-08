@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.1.2 — Unreleased
+## 0.1.2
 
 - Local-date Agenda, persistent Watch Later, and opt-in game reminders with quiet hours.
 - Keyboard-accessible planner controls, shortcut help, wrapped labels, and stable selection after queue removals.
