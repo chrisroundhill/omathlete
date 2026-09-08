@@ -107,6 +107,45 @@ try {
   const noScoreboard = run(['detail','--no-cache'],{...missingScoresEnv,OMATHLETE_FIXTURE_SCOREBOARD_FAILURE:'1'}).teams[0];
   assert.equal(noScoreboard.current.teamScore,'?','Missing score never becomes a fabricated zero or stale score');
   assert.equal(noScoreboard.current.opponentScore,'?');
+  assert.equal(noScoreboard.current.scoreStale,true);
+  const started = run(['detail','--no-cache'],{...missingScoresEnv,
+    OMATHLETE_FIXTURE_SCHEDULE_STATE:'pre',OMATHLETE_FIXTURE_BOARD_STATE:'in'}).teams[0];
+  assert.equal(started.current.state,'in','Scoreboard promotes a lagging scheduled game');
+  const ended = run(['detail','--no-cache'],{...missingScoresEnv,
+    OMATHLETE_FIXTURE_BOARD_STATE:'post',OMATHLETE_FIXTURE_STATUS_NAME:'STATUS_FINAL'}).teams[0];
+  assert.equal(ended.current.state,'post');
+  assert.equal(ended.schedule[0].section,'LATEST','Final game is no longer placed in LIVE');
+  const retained = run(['detail','--no-cache'],{...missingScoresEnv,
+    OMATHLETE_FIXTURE_SCHEDULE_STATE:'post',OMATHLETE_FIXTURE_GAME_AGE:'90000',
+    OMATHLETE_FIXTURE_SCOREBOARD_FAILURE:'1'}).teams[0];
+  assert.equal(retained.current.teamScore,'14','Known final survives missing scores beyond the live window');
+  assert.equal(retained.current.scoreCached,true);
+  assert.equal(retained.current.scoreUpdatedAt,ended.current.scoreUpdatedAt,'Cache reuse preserves original score timestamp');
+  const otherFinal = run(['detail','--no-cache'],{...missingScoresEnv,
+    OMATHLETE_FIXTURE_SCHEDULE_STATE:'post',OMATHLETE_FIXTURE_GAME_AGE:'90000',
+    OMATHLETE_FIXTURE_SCOREBOARD_FAILURE:'1',OMATHLETE_FIXTURE_GAME_ID:'another-final'}).teams[0];
+  assert.equal(otherFinal.current.teamScore,'?','A different final cannot borrow a prior game score');
+  for (const name of ['STATUS_POSTPONED','STATUS_CANCELED','STATUS_SUSPENDED']) {
+    const changed = run(['detail','--no-cache'],{...missingScoresEnv,
+      OMATHLETE_FIXTURE_STATUS_NAME:name}).teams[0];
+    assert.ok(changed.schedule.some(g=>g.section==='SCHEDULE CHANGE'));
+    assert.ok(!changed.current || changed.current.id !== 'live-mlb');
+    assert.ok(!changed.upcoming || changed.upcoming.id !== 'live-mlb');
+    assert.notEqual(logic.statusText({statusName:name,state:'in'},true),'Live');
+  }
+  const delayed = run(['detail','--no-cache'],{...missingScoresEnv,
+    OMATHLETE_FIXTURE_SCHEDULE_STATE:'pre',OMATHLETE_FIXTURE_BOARD_STATE:'pre',
+    OMATHLETE_FIXTURE_STATUS_NAME:'STATUS_DELAYED',OMATHLETE_FIXTURE_GAME_AGE:'21600'}).teams[0];
+  assert.equal(delayed.upcoming.id,'live-mlb','Long delay is not dropped by the kickoff grace window');
+  assert.equal(logic.statusText(delayed.upcoming,true),'Delayed');
+  const overnight = run(['detail','--no-cache'],{...missingScoresEnv,
+    OMATHLETE_FIXTURE_GAME_AGE:'72000',OMATHLETE_FIXTURE_STATUS_NAME:'STATUS_IN_PROGRESS'}).teams[0];
+  assert.equal(overnight.current.teamScore,'14','An ongoing game still uses its start-date scoreboard after midnight');
+  const overtime = run(['detail','--no-cache'],{...missingScoresEnv,
+    OMATHLETE_FIXTURE_STATUS_NAME:'STATUS_IN_PROGRESS',OMATHLETE_FIXTURE_STATUS_DETAIL:'OT 2:15'}).teams[0];
+  assert.equal(overtime.current.state,'in');
+  assert.equal(logic.statusText(overtime.current,false),'OT 2:15');
+  assert.equal(logic.statusText(overtime.current,true),'Live');
   const context = {...game,venue:'Fixture Stadium',teamRecord:'10-5',opponentRecord:'8-7'};
   assert.equal(logic.contrastingInk({r:1,g:1,b:1}),'#000000');
   assert.equal(logic.contrastingInk({r:0,g:0,b:0}),'#ffffff');

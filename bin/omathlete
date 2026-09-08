@@ -416,7 +416,7 @@ stale_team() {
 team_detail() {
   local team="$1" no_cache="$2" sport team_id name abbrev path cache_file age payload regular
   local season_year now league_cache league_payload league_age merged_payload normalized
-  local live_date live_scores='{"games":[]}'
+  local live_date live_scores='{"games":[]}' previous='{}'
   sport=$(jq -r '.sport' <<<"$team")
   team_id=$(jq -r '.teamId' <<<"$team")
   name=$(jq -r '.teamName' <<<"$team")
@@ -493,18 +493,20 @@ team_detail() {
   # Team schedules can update the inning/clock while omitting live scores.
   # Reuse the bounded daily scoreboard, matching exact event IDs below.
   live_date=$(jq -r --argjson now "$now" '
-    [.events[] | select(.competitions[0].status.type.state == "in")
+    [.events | sort_by((if .competitions[0].status.type.state == "in" then 1 else 0 end), .date) | reverse | .[]
       | .date | select(type == "string")
       | (if test("T[0-9]{2}:[0-9]{2}Z$") then sub("Z$"; ":00Z") else . end)
       | select((try fromdateiso8601 catch 0) >= ($now - 86400)
         and (try fromdateiso8601 catch 0) <= ($now + 3600))]
-    | sort | last // "" | .[:10] | gsub("-"; "")' <<<"$payload" 2>/dev/null) || live_date=""
+    | first // "" | .[:10] | gsub("-"; "")' <<<"$payload" 2>/dev/null) || live_date=""
   if [[ $live_date =~ ^[0-9]{8}$ ]]; then
     live_scores=$(slate_sport "$sport" "$live_date" "$no_cache") || live_scores='{"games":[]}'
   fi
+  if valid_json_file "$cache_file" "$MAX_TEAM_CACHE_BYTES"; then previous=$(cat "$cache_file"); fi
 
   if normalized=$(jq -ce --arg sport "$sport" --arg id "$team_id" --arg name "$name" --arg abbrev "$abbrev" \
     --argjson liveScores "$live_scores" \
+    --argjson previous "$previous" \
     --argjson now "$now" --argjson maxUpcoming "$MAX_UPCOMING_GAMES" \
     --argjson maxSchedule "$MAX_TEAM_SCHEDULE_GAMES" '
       def epoch:
@@ -512,28 +514,42 @@ team_detail() {
         | try fromdateiso8601 catch 0;
       def side($event; $where): [$event.competitions[0].competitors[]? | select(.homeAway == $where)][0];
       def text($length): tostring | .[:$length];
+      def scoreboard($event): [$liveScores.games[]? | select(.id == ($event.id | tostring) and .stale != true)][0];
+      def interrupted: (.competitions[0].status.type.name // "") | test("POSTPONED|CANCELED|CANCELLED|SUSPENDED");
       def view($event):
         (side($event; "home")) as $home |
         (side($event; "away")) as $away |
         ($home.team.id == $id) as $isHome |
         (if $isHome then $home else $away end) as $mine |
         (if $isHome then $away else $home end) as $other |
-        ([$liveScores.games[]? | select(.id == ($event.id | tostring) and .stale != true)][0]) as $liveScore |
+        scoreboard($event) as $liveScore |
+        ([($previous.schedule // [])[], ($previous.agenda // [])[], $previous.current
+          | select(. != null and .id == ($event.id | tostring) and .state == "post"
+            and .teamScore != "?" and .opponentScore != "?")][0]) as $oldFinal |
+        (if $event.competitions[0].status.type.state == "post" and $liveScore == null
+          and ($mine.score == null or $other.score == null) then $oldFinal else null end) as $savedFinal |
         {
           id: (($event.id // "") | text(64)),
           homeTeam: (($home.team.abbreviation // $home.team.displayName // "TBD") | text(40)),
           awayTeam: (($away.team.abbreviation // $away.team.displayName // "TBD") | text(40)),
           state: (($liveScore.state // $event.competitions[0].status.type.state // "pre") | text(12)),
           detail: (($liveScore.detail // $event.competitions[0].status.type.shortDetail // "Scheduled") | text(120)),
+          statusName: (($event.competitions[0].status.type.name // "") | text(64)),
+          scoreCached: ($savedFinal != null),
+          scoreUpdatedAt: (if $savedFinal != null then ($savedFinal.scoreUpdatedAt // $previous.updatedAt) else $now end),
+          scoreStale: ($event.competitions[0].status.type.state == "in"
+            and ($liveScores.stale == true or ($liveScore == null and ($mine.score == null or $other.score == null)))),
           isHome: $isHome,
           venue: (($event.competitions[0].venue.fullName // "") | text(120)),
           teamRecord: (([$mine.records[]? | select(.type == "total" or .name == "overall") | .summary][0] // "") | text(40)),
           opponentRecord: (([$other.records[]? | select(.type == "total" or .name == "overall") | .summary][0] // "") | text(40)),
           opponent: (($other.team.abbreviation // $other.team.displayName // "TBD") | text(40)),
           teamScore: ((if $liveScore then (if $isHome then $liveScore.homeScore else $liveScore.awayScore end)
+            elif $savedFinal then $savedFinal.teamScore
             elif ($mine.score | type) == "object" then ($mine.score.displayValue // $mine.score.value)
             else $mine.score end) // "?" | text(20)),
           opponentScore: ((if $liveScore then (if $isHome then $liveScore.awayScore else $liveScore.homeScore end)
+            elif $savedFinal then $savedFinal.opponentScore
             elif ($other.score | type) == "object" then ($other.score.displayValue // $other.score.value)
             else $other.score end) // "?" | text(20)),
           date: ($event.date | text(64)),
@@ -546,7 +562,11 @@ team_detail() {
             | select((.rel // []) | index("desktop"))
             | .href][0] // "") | text(512))
         };
-      (.events // []) as $events |
+      # Reconcile state before choosing live/recent/upcoming sections.
+      [(.events // [])[] | . as $event | scoreboard($event) as $score
+        | if $score != null then .competitions[0].status.type += {
+            state:$score.state, shortDetail:$score.detail, name:($score.statusName // "")}
+          else . end] as $events |
       (.team // {}) as $team |
       (($team.logo // "") | text(512)) as $logo |
       (if ($logo | test("^https://a\\.espncdn\\.com/")) then $logo else "" end) as $teamLogo |
@@ -555,14 +575,21 @@ team_detail() {
       (if (($team.alternateColor // "") | test("^[0-9A-Fa-f]{6}$"))
         then ("#" + $team.alternateColor) else "" end) as $teamAlternateColor |
       ([$events[] | select(.competitions[0].status.type.state == "in")
+        | select(interrupted | not)
         | select((.date | epoch) <= ($now + 3600))] | sort_by(.date) | last) as $live |
       ([$events[] | select(.competitions[0].status.type.state == "post")
+        | select(interrupted | not)
         | select((.date | epoch) <= ($now + 3600))] | sort_by(.date) | last) as $recent |
       ([$events[] | select(.competitions[0].status.type.state == "pre")
-        | select((.date | epoch) >= ($now - 3600))] | sort_by(.date) | .[:$maxUpcoming]) as $nextGames |
+        | select(interrupted | not)
+        | select((.date | epoch) >= ($now - 3600)
+          or ((.competitions[0].status.type.name // "") == "STATUS_DELAYED" and (.date | epoch) >= ($now - 86400)))] | sort_by(.date) | .[:$maxUpcoming]) as $nextGames |
+      ([$events[] | select(interrupted) | select((.date | epoch) >= ($now - 86400))]
+        | sort_by(.date) | .[:1]) as $interruptions |
       ($nextGames[0] // null) as $next |
       ((if $live then [(view($live) + {kind:"live", section:"LIVE"})] else [] end)
         + (if $recent then [(view($recent) + {kind:"recent", section:"LATEST"})] else [] end)
+        + [$interruptions[] | (view(.) + {kind:"interrupted",section:"SCHEDULE CHANGE"})]
         + [$nextGames[] | (view(.) + {kind:"upcoming", section:"UPCOMING"})]
         | .[:$maxSchedule]) as $schedule |
       {
@@ -765,6 +792,7 @@ slate_sport() {
           homeScore:(($home.score // "?") | text(20)),
           awayScore:(($away.score // "?") | text(20)),
           state:(($event.competitions[0].status.type.state // "pre") | text(12)),
+          statusName:(($event.competitions[0].status.type.name // "") | text(64)),
           detail:(($event.competitions[0].status.type.shortDetail // "Scheduled") | text(120)),
           date:($event.date | text(64)),
           when:(($event.date | epoch) | strflocaltime("%-I:%M %p")),

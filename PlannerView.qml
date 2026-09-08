@@ -14,6 +14,7 @@ Item {
   property string revealedKey: ""
   property bool reconciling: false
   property string warning: ""
+  property double now: Date.now()
   property bool helpOpen: false
   signal chooseRange(int value)
   signal chooseQueue(bool value)
@@ -263,6 +264,15 @@ Item {
           textFormat: Text.PlainText
           color: Color.foreground
           font.pixelSize: Style.font.caption
+          wrapMode: Text.WordWrap
+        }
+        Text {
+          width: parent.width
+          text: Logic.freshness(card.modelData, root.now)
+          visible: text !== ""
+          font.family: Style.font.family
+          font.pixelSize: Style.font.caption
+          color: Logic.dataStale(card.modelData, root.now) ? Color.urgent : Color.foreground
           wrapMode: Text.WordWrap
         }
         Row {

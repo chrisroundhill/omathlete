@@ -42,6 +42,8 @@ basketball, Premier League, and MLS.
 - Planner keyboard focus, shortcut help, wrapped names, and long-queue regression checks.
 - Optional venue and team records with spoiler-safe display.
 - Team-specific retries, missing-data explanations, and privacy-safe diagnostic summaries.
+- Scoreboard-driven game transitions, interrupted fixtures, and retained cached finals.
+- Age-based live-data warnings in the bar, tooltip, team details, and planner.
 
 ## Deliberately deferred
 

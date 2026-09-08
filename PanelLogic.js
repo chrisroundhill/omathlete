@@ -50,20 +50,39 @@ function selectedGameIndex(schedule, key, previousIndex) {
 
 function statusText(game, hidden) {
   if (!game) return "";
+  var special = {STATUS_DELAYED:"Delayed",STATUS_POSTPONED:"Postponed",
+    STATUS_CANCELED:"Canceled",STATUS_CANCELLED:"Canceled",STATUS_SUSPENDED:"Suspended"};
+  if (special[game.statusName]) return special[game.statusName];
   if (!hidden) return game.detail || "Scheduled";
   // Provider descriptions can contain winners, aggregate scores and shootouts.
   return game.state === "in" ? "Live" : game.state === "post" ? "Final" : "Scheduled";
 }
 
+function dataStale(item, now) {
+  if (!item) return false;
+  var game = item.current || item;
+  return !!item.stale || !!game.scoreStale || !!game.scoreCached
+    || (game.state === "in" && (!item.updatedAt || now / 1000 - item.updatedAt > 120));
+}
+
+function liveLabel(team, hidden, now) {
+  var game = team.current;
+  return (game.scoreStale ? "Stale · " : dataStale(team, now) ? "Cached · " : "") + team.teamAbbrev
+    + (hidden ? "" : " " + game.teamScore + "–" + game.opponentScore)
+    + " · " + statusText(game, hidden);
+}
+
 function freshness(item, now) {
   if (!item) return "";
-  var updated = Number(item.updatedAt || 0);
+  var game = item.current || item;
+  if (game.scoreStale) return "Live score update failed · r to retry";
+  var updated = Number((game.scoreCached ? game.scoreUpdatedAt : item.updatedAt) || 0);
   if (!updated && item.loading) return "Loading games…";
   if (!updated) return item.stale ? "Couldn't load games · r to retry" : "";
   var minutes = Math.max(0, Math.floor((now / 1000 - updated) / 60));
   var age = minutes < 1 ? "just now" : minutes < 60 ? minutes + "m ago"
     : minutes < 1440 ? Math.floor(minutes / 60) + "h ago" : Math.floor(minutes / 1440) + "d ago";
-  return (item.stale ? "Cached · updated " : "Updated ") + age;
+  return (game.scoreCached ? "Final score cached · updated " : dataStale(item, now) ? "Cached · updated " : "Updated ") + age;
 }
 
 function availability(team) {

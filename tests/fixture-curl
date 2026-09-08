@@ -113,6 +113,18 @@ jq -cn --argjson team "$team" --arg url "$url" '
       | .events[1].date = ((now + 3600) | strftime("%Y-%m-%dT%H:%M:%SZ"))
     else . end
   | if (env.OMATHLETE_FIXTURE_EMPTY_EVENTS // "0") == "1" then .events = [] else . end
+  | if env.OMATHLETE_FIXTURE_GAME_AGE != null then
+      .events[0].date = ((now - (env.OMATHLETE_FIXTURE_GAME_AGE | tonumber)) | strftime("%Y-%m-%dT%H:%M:%SZ")) else . end
+  | if env.OMATHLETE_FIXTURE_GAME_ID != null then .events[0].id = env.OMATHLETE_FIXTURE_GAME_ID else . end
+  | if env.OMATHLETE_FIXTURE_SCHEDULE_STATE != null and ($url | contains("/teams/")) then
+      .events[0].competitions[0].status.type.state = env.OMATHLETE_FIXTURE_SCHEDULE_STATE else . end
+  | if env.OMATHLETE_FIXTURE_BOARD_STATE != null and ($url | contains("/scoreboard")) then
+      .events[0].competitions[0].status.type.state = env.OMATHLETE_FIXTURE_BOARD_STATE else . end
+  | if env.OMATHLETE_FIXTURE_STATUS_NAME != null then
+      .events[0].competitions[0].status.type.name = env.OMATHLETE_FIXTURE_STATUS_NAME
+      | .events[0].competitions[0].status.type.shortDetail = env.OMATHLETE_FIXTURE_STATUS_NAME else . end
+  | if env.OMATHLETE_FIXTURE_STATUS_DETAIL != null then
+      .events[0].competitions[0].status.type.shortDetail = env.OMATHLETE_FIXTURE_STATUS_DETAIL else . end
   | if (env.OMATHLETE_FIXTURE_MISSING_LIVE_SCORES // "0") == "1" and ($url | contains("/teams/"))
     then .events[0].competitions[0].competitors |= map(del(.score)) else . end
   | if ($url | contains("/scoreboard"))

@@ -14,6 +14,17 @@ for (const file of ['Panel.qml', 'PlannerView.qml']) {
 }
 vm.runInContext(fs.readFileSync(new URL('../PanelLogic.js', import.meta.url), 'utf8'), logic);
 const now = Date.parse('2026-09-05T18:00:00Z');
+const liveTeam = {teamAbbrev:'CHC',updatedAt:now/1000,current:{state:'in',detail:'Top 7th',teamScore:'3',opponentScore:'8'}};
+assert.equal(logic.dataStale(liveTeam,now),false);
+assert.equal(logic.dataStale(liveTeam,now+121000),true,'Live data ages even without a completed refresh');
+assert.match(logic.liveLabel(liveTeam,false,now+121000),/^Cached · CHC 3–8/);
+assert.equal(logic.liveLabel(liveTeam,true,now+121000),'Cached · CHC · Live');
+assert.ok(!logic.liveLabel(liveTeam,true,now+121000).includes('7th'));
+assert.match(logic.freshness(liveTeam,now+121000),/^Cached/);
+assert.equal(logic.dataStale({...liveTeam,stale:true},now),true);
+assert.match(logic.liveLabel({...liveTeam,current:{...liveTeam.current,scoreStale:true}},false,now),/^Stale/);
+assert.match(logic.freshness({...liveTeam,current:{...liveTeam.current,scoreStale:true}},now),/update failed/);
+assert.equal(logic.dataStale({...liveTeam,updatedAt:(now+121000)/1000},now+121000),false,'Successful refresh clears stale state');
 const team = {sport: 'mlb', teamId: '16', teamAbbrev: 'CHC',
   upcoming: {id: 'game-1', date: new Date(now + 3600000).toISOString()}};
 assert.equal(logic.refreshInterval([team], false, now), 300000);

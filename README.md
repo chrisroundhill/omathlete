@@ -117,6 +117,20 @@ did not supply a network; it does not mean the game is untelevised.
 Live scores use ESPN's daily scoreboard because team schedules can report the
 current inning/clock without scores. A missing score displays `?`, not zero;
 stale scoreboard results are not substituted as current scores.
+Scoreboard status is reconciled before choosing Live/Latest/Upcoming sections.
+Nearby scheduled and completed games are checked too, so a lagging schedule
+can transition directly to live or final. Active games use their start-date
+scoreboard across midnight (up to 24 hours after the scheduled start).
+Delays remain visible; postponed, canceled, and suspended fixtures appear under
+Schedule Change instead of counting down as normal upcoming games.
+
+If a later response omits a known final score, the same game's cached final is
+retained and labeled with its original score-update age. Live data older than
+two minutes, failed refreshes, and failed score requests get explicit freshness
+warnings. The bar puts Cached/Stale before live scores, disables its live
+highlight while stale, and shows `!` in the icon (including vertical bars).
+The tooltip and team/planner views provide more detail. These indicators also
+remain visible when spoilers are hidden, without exposing the score or inning.
 
 Team View distinguishes loading, cached fallback, unavailable data, and a
 successful response with no upcoming fixtures. An empty schedule is not proof

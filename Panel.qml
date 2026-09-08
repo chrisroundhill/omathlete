@@ -67,23 +67,22 @@ Panel {
     ? liveTeams[liveBarIndex % liveTeams.length]
     : (findTeam(pinnedTeam) || nextBarTeam() || (teams.length > 0 ? teams[0] : null))
   readonly property bool barLive: !!barTeam && !!barTeam.current && barTeam.current.state === "in"
+  readonly property bool barDataStale: barLive ? Logic.dataStale(barTeam, root.now) : !!barTeam && !!barTeam.stale
   readonly property string backend: decodeURIComponent(
     String(Qt.resolvedUrl(".")).replace(/^file:\/\//, "")) + "bin/omathlete"
   readonly property string barLabel: {
     if (busy && teams.length === 0) return "…"
     if (!barTeam) return ""
     if (barLive) {
-      if (gameHidden(barTeam.current, barTeam.sport)) return barTeam.teamAbbrev + " · Live"
-      return barTeam.teamAbbrev + " " + barTeam.current.teamScore
-        + "–" + barTeam.current.opponentScore + " · " + barTeam.current.detail
+      return Logic.liveLabel(barTeam, gameHidden(barTeam.current, barTeam.sport), root.now)
     }
     if (barTeam.upcoming) return barTeam.teamAbbrev
       + (barTeam.upcoming.isHome ? " vs " : " @ ") + barTeam.upcoming.opponent
-      + " · " + Logic.countdown(barTeam.upcoming.date, root.now)
+      + " · " + (barTeam.upcoming.statusName === "STATUS_DELAYED" ? "Delayed" : Logic.countdown(barTeam.upcoming.date, root.now))
     return ""
   }
   readonly property string tooltipText: barLabel
-    ? "Omathlete · " + barLabel + (spoilersHidden ? " · scores hidden" : "")
+    ? "Omathlete · " + barLabel + " · " + Logic.freshness(barTeam, root.now) + (spoilersHidden ? " · scores hidden" : "")
     : "Omathlete · your teams"
 
   Component.onCompleted: {
@@ -1281,7 +1280,7 @@ Panel {
               width: parent.width
               text: Logic.freshness(root.detailTeam, root.now)
               visible: text !== ""
-              color: root.detailTeam && root.detailTeam.stale ? Color.urgent : root.barForeground
+              color: Logic.dataStale(root.detailTeam, root.now) ? Color.urgent : root.barForeground
               wrapMode: Text.WordWrap
               font.family: root.bar ? root.bar.fontFamily : Style.font.family
               font.pixelSize: Style.font.caption
@@ -1371,7 +1370,7 @@ Panel {
                     width: parent.width
                     text: modelData.when
                       + (modelData.kind === "upcoming"
-                        ? " · " + (modelData.broadcast || "TV TBA")
+                        ? " · " + Logic.statusText(modelData, true) + " · " + (modelData.broadcast || "TV TBA")
                         : " · " + Logic.statusText(modelData, root.gameHidden(modelData, root.detailTeam.sport))
                           + (modelData.broadcast ? " · " + modelData.broadcast : ""))
                     color: Qt.darker(root.barForeground, 1.25)
@@ -1562,7 +1561,7 @@ Panel {
                     width: parent.width
                     text: Logic.freshness(modelData, root.now)
                     visible: text !== ""
-                    color: modelData.stale ? Color.urgent : root.barForeground
+                    color: Logic.dataStale(modelData, root.now) ? Color.urgent : root.barForeground
                     wrapMode: Text.WordWrap
                     font.family: root.bar ? root.bar.fontFamily : Style.font.family
                     font.pixelSize: Style.font.caption
@@ -1586,6 +1585,7 @@ Panel {
         rows: Logic.plannerRows(root.teams, root.preferences, root.agendaRange, root.watchLaterOpen, root.now)
         range: root.agendaRange
         watchLater: root.watchLaterOpen
+        now: root.now
         quietHours: root.preferences.quietHours !== false
         warning: root.errorMessage || (root.report.stale ? "Some schedules are cached or unavailable." : "")
         isHidden: function(game) { return root.gameHidden(game, game.sport) }
