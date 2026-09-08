@@ -219,6 +219,7 @@ Item {
     id: gameList
     objectName: "plannerGames"
     onHeightChanged: root.ensureSelectionVisible()
+    onContentHeightChanged: root.ensureSelectionVisible()
     anchors.top: header.bottom
     anchors.topMargin: Style.space(8)
     anchors.bottom: parent.bottom
@@ -256,6 +257,7 @@ Item {
       required property int index
       readonly property bool hiddenResult: root.isHidden(modelData) && root.revealedKey !== Logic.gameKey(modelData)
       onHeightChanged: if (index === root.selectedIndex) root.ensureSelectionVisible()
+      onYChanged: if (index === root.selectedIndex) root.ensureSelectionVisible()
       width: gameList.width
       height: details.implicitHeight + Style.space(16)
       color: index === root.selectedIndex ? Qt.rgba(1,1,1,0.1) : "transparent"
