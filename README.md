@@ -55,7 +55,7 @@ does not discard your followed teams. To remove that data as well, delete:
 
 The bar prioritizes live favorite games, then the earliest upcoming game
 across all favorites. Multiple live games rotate every six seconds. Horizontal
-bars use a stable-width scoreboard label; vertical bars show the Omathlete
+bars fit the scoreboard label to its text within a width cap; vertical bars show the Omathlete
 scoreboard mark without text. While a game is live, only the affected teams are
 refreshed every 15 seconds. A changed score receives a brief, non-animated
 highlight unless spoiler mode is enabled.
@@ -191,6 +191,7 @@ bash tests/reliability.sh
 node tests/panel-logic.mjs
 node tests/loading.mjs
 node tests/slate-view.mjs
+node tests/bar-view.mjs
 node tests/planner.mjs
 node tests/planner-view.mjs
 tests/smoke.sh

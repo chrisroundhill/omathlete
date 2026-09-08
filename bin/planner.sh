@@ -75,7 +75,8 @@ check_reminders() {
     game=$(planner_lookup "$sport" "$game_id") || continue
     # Use recent schedule data only, and never infer kickoff from a past result.
     [[ $(jq -r '.state' <<<"$game") =~ ^(pre|in)$ ]] || continue
-    jq -e '(.detail // "") | test("postpon|cancel|TBD"; "i")' <<<"$game" >/dev/null && continue
+    jq -e '((.statusName // "") + " " + (.detail // ""))
+      | test("postpon|cancel|suspend|delay|TBD"; "i")' <<<"$game" >/dev/null && continue
     cached_at=$(jq -r '.cachedAt' <<<"$game")
     (( now - cached_at <= 600 && now >= cached_at - 60 )) || continue
     start=$(jq -r '.date' <<<"$game")

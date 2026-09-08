@@ -58,7 +58,7 @@ Item {
     var game = selectedGame()
     if (event.key === Qt.Key_Question || event.key === Qt.Key_F1) helpOpen = !helpOpen
     else if (event.key === Qt.Key_J || event.key === Qt.Key_Down) { root.forceActiveFocus(); selectedIndex = Math.max(0, Math.min(rows.length - 1, selectedIndex + 1)) }
-    else if (event.key === Qt.Key_K || event.key === Qt.Key_Up) selectedIndex = Math.max(0, selectedIndex - 1)
+    else if (event.key === Qt.Key_K || event.key === Qt.Key_Up) { root.forceActiveFocus(); selectedIndex = Math.max(0, selectedIndex - 1) }
     else if (event.key === Qt.Key_W && game) root.watchGame(game)
     else if (event.key === Qt.Key_B && game) root.remindGame(game)
     else if (event.key === Qt.Key_V) root.reveal()
@@ -91,10 +91,11 @@ Item {
       root.selectedIndex = rowIndex
       gameList.positionViewAtIndex(rowIndex, ListView.Contain)
     }
-    height: Style.space(30)
+    height: Math.max(Style.space(30), actionLabel.implicitHeight + Style.space(8))
     color: active ? Color.accent : Qt.rgba(1, 1, 1, 0.08)
     radius: Style.cornerRadius
     Text {
+      id: actionLabel
       anchors.fill: parent
       anchors.margins: Style.space(4)
       text: parent.label
@@ -104,7 +105,7 @@ Item {
       font.family: Style.font.family
       horizontalAlignment: Text.AlignHCenter
       verticalAlignment: Text.AlignVCenter
-      elide: Text.ElideRight
+      wrapMode: Text.WordWrap
     }
     MouseArea {
       anchors.fill: parent
@@ -171,7 +172,7 @@ Item {
     }
     Text {
       width: parent.width
-      text: root.warning || "Reminders are per-game and off until you choose one."
+      text: root.warning || "b: reminder Off → 15m before → At start → Off. Shell must be running."
       color: root.warning ? Color.urgent : Color.foreground
       wrapMode: Text.WordWrap
       font.family: Style.font.family
@@ -287,7 +288,7 @@ Item {
           Action {
             width: (parent.width - parent.spacing) / 2
             rowIndex: card.index
-            label: "Bell: " + card.modelData.reminder
+            label: "Reminder: " + card.modelData.reminder
             onClicked: { root.selectedIndex = card.index; root.remindGame(card.modelData) }
           }
         }

@@ -57,6 +57,9 @@ jobs:
       - name: Check virtualized slate rendering
         run: node tests/slate-view.mjs
 
+      - name: Check compact and vertical bar geometry
+        run: node tests/bar-view.mjs
+
       - name: Check agenda, watch later, and reminders
         run: |
           node tests/planner.mjs

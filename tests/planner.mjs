@@ -46,6 +46,11 @@ try {
   assert.equal(state.watchLater.length,1,'Unrelated settings preserve the queue');
   state = run(['remind-game','mlb',game.id]);
   assert.equal(state.reminders[0].leadMinutes,15);
+  for (const statusName of ['STATUS_DELAYED','STATUS_SUSPENDED','STATUS_POSTPONED','STATUS_CANCELED']) {
+    cache({...game,statusName,detail:'Scheduled'});
+    assert.equal(run(['check-reminders']).sent,0,'Interrupted games must not send kickoff reminders');
+  }
+  cache();
   assert.equal(run(['check-reminders']).sent,1);
   assert.equal(run(['check-reminders']).sent,0,'Restarted checker must not send twice');
   const notice = fs.readFileSync(env.OMATHLETE_NOTIFY_LOG,'utf8');

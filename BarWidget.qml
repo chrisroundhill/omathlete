@@ -47,7 +47,8 @@ BarWidget {
     labelVisible: false
     hasVisualContent: true
     active: panelLoader.item ? panelLoader.item.barLive && !panelLoader.item.barDataStale : false
-    fixedWidth: root.vertical ? -1 : (stateLabel.text ? Style.space(158) : Style.bar.iconSlot)
+    fixedWidth: root.vertical ? -1 : (stateLabel.text
+      ? barContent.implicitWidth + button.scaledHorizontalMargin * 2 : Style.bar.iconSlot)
     fixedHeight: root.vertical ? Style.bar.iconSlot : -1
     tooltipText: panelLoader.item ? panelLoader.item.tooltipText : "Omathlete"
 
@@ -115,7 +116,7 @@ BarWidget {
       Text {
         id: stateLabel
         visible: !root.vertical && text !== ""
-        width: visible ? Style.space(126) : 0
+        width: visible ? Math.min(implicitWidth, Style.space(126)) : 0
         anchors.verticalCenter: parent.verticalCenter
         text: panelLoader.item ? panelLoader.item.barLabel : ""
         color: button.active && button.useActiveColor ? button.activeColor : button.foreground

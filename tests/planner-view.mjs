@@ -82,6 +82,25 @@ Item {
       verify(texts(p).indexOf("Final 88-99") < 0)
       for(var n=0;n<35;n++) keyClick(Qt.Key_K)
       compare(p.selectedIndex,0)
+      // Removing another row preserves identity; removing the selected row
+      // selects its next neighbor, then the previous neighbor at the end.
+      p.watchLater = true
+      p.rows = many.slice(0,4)
+      wait(30)
+      p.selectedIndex = 2
+      p.rows = many.slice(1,4)
+      wait(30)
+      compare(p.selectedGame().id,"2")
+      compare(p.selectedIndex,1)
+      p.reveal()
+      p.rows = [many[1],many[3]]
+      wait(30)
+      compare(p.selectedGame().id,"3")
+      compare(p.revealedKey,"")
+      p.rows = [many[1]]
+      wait(30)
+      compare(p.selectedGame().id,"1")
+      compare(p.selectedIndex,0)
       p.rows = []
       wait(30)
       keyClick(Qt.Key_J)
