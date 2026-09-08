@@ -19,10 +19,10 @@ no matching private-key or common access-token patterns. This is not an audit.
 
 ## Desktop and media gates
 
-- [ ] Check Agenda with a crowded list and the active theme; traverse using only the keyboard.
-- [ ] Remove first/middle/last Watch Later entries; selection remains visible and results stay protected.
-- [ ] Verify reminder Off / 15m before / At start, quiet hours, and no duplicate notification after reload.
-- [ ] Confirm compact horizontal spacing and a usable vertical stale indicator.
+- [x] Check Agenda with a crowded list and the active theme; traverse using only the keyboard (user confirmed).
+- [x] Remove first/middle/last Watch Later entries; selection remains visible and results stay protected (user confirmed).
+- [x] Verify reminder Off / 15m before / At start, quiet hours, and no duplicate notification after reload (user confirmed).
+- [x] Confirm compact horizontal spacing; automated vertical geometry checks pass. Vertical runtime remains unverified.
 - [x] Capture updated `preview.png` with no private desktop content (user supplied, 2026-09-08).
 - [ ] Capture an additional Agenda screenshot (optional promotional material).
 - [ ] Record a short keyboard-only demonstration; include spoiler mode and reminders.
