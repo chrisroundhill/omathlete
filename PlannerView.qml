@@ -27,6 +27,18 @@ Item {
   signal spoilersToggle()
 
   function selectedGame() { return rows[selectedIndex] || null }
+  function ensureSelectionVisible() {
+    Qt.callLater(function() {
+      gameList.forceLayout()
+      gameList.positionViewAtIndex(root.selectedIndex, ListView.Contain)
+      var item = gameList.currentItem
+      if (!item) return
+      if (item.y < gameList.contentY || item.height > gameList.height)
+        gameList.contentY = item.y
+      else if (item.y + item.height > gameList.contentY + gameList.height)
+        gameList.contentY = item.y + item.height - gameList.height
+    })
+  }
   // Own the focus loop; never let Tab escape to the host's plugin switcher.
   function focusNext(backward) {
     var controls = []
@@ -55,7 +67,7 @@ Item {
     if (!reconciling) {
       selectedKey = Logic.gameKey(selectedGame())
       revealedKey = ""
-      gameList.positionViewAtIndex(selectedIndex, ListView.Contain)
+      ensureSelectionVisible()
     }
   }
   onRowsChanged: {
@@ -66,7 +78,7 @@ Item {
     if (revealedKey !== selectedKey) revealedKey = ""
     Qt.callLater(function() {
       gameList.contentY = oldY; gameList.returnToBounds()
-      gameList.positionViewAtIndex(root.selectedIndex, ListView.Contain)
+      root.ensureSelectionVisible()
       root.reconciling = false
     })
   }
@@ -113,7 +125,7 @@ Item {
     Keys.onSpacePressed: clicked()
     onActiveFocusChanged: if (activeFocus && rowIndex >= 0) {
       root.selectedIndex = rowIndex
-      gameList.positionViewAtIndex(rowIndex, ListView.Contain)
+      root.ensureSelectionVisible()
     }
     height: Math.max(Style.space(30), actionLabel.implicitHeight + Style.space(8))
     color: active ? Color.accent : Qt.rgba(1, 1, 1, 0.08)
@@ -206,6 +218,7 @@ Item {
   ListView {
     id: gameList
     objectName: "plannerGames"
+    onHeightChanged: root.ensureSelectionVisible()
     anchors.top: header.bottom
     anchors.topMargin: Style.space(8)
     anchors.bottom: parent.bottom
@@ -242,6 +255,7 @@ Item {
       required property var modelData
       required property int index
       readonly property bool hiddenResult: root.isHidden(modelData) && root.revealedKey !== Logic.gameKey(modelData)
+      onHeightChanged: if (index === root.selectedIndex) root.ensureSelectionVisible()
       width: gameList.width
       height: details.implicitHeight + Style.space(16)
       color: index === root.selectedIndex ? Qt.rgba(1,1,1,0.1) : "transparent"
