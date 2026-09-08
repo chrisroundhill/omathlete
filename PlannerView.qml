@@ -27,6 +27,22 @@ Item {
   signal spoilersToggle()
 
   function selectedGame() { return rows[selectedIndex] || null }
+  // Own the focus loop; never let Tab escape to the host's plugin switcher.
+  function focusNext(backward) {
+    var controls = []
+    function collect(item) {
+      if (!item.visible || !item.enabled) return
+      if (item.activeFocusOnTab) controls.push(item)
+      for (var i = 0; i < item.children.length; i++) collect(item.children[i])
+    }
+    collect(root)
+    if (!controls.length) { root.forceActiveFocus(); return }
+    var current = -1
+    for (var i = 0; i < controls.length; i++) if (controls[i].activeFocus) current = i
+    var next = current < 0 ? (backward ? controls.length - 1 : 0)
+      : (current + (backward ? -1 : 1) + controls.length) % controls.length
+    controls[next].forceActiveFocus(backward ? Qt.BacktabFocusReason : Qt.TabFocusReason)
+  }
   function reveal() {
     var game = selectedGame()
     if (game) revealedKey = revealedKey === Logic.gameKey(game) ? "" : Logic.gameKey(game)
@@ -56,7 +72,9 @@ Item {
   }
   Keys.onPressed: function(event) {
     var game = selectedGame()
-    if (event.key === Qt.Key_Question || event.key === Qt.Key_F1) helpOpen = !helpOpen
+    if (event.key === Qt.Key_Tab || event.key === Qt.Key_Backtab)
+      root.focusNext(event.key === Qt.Key_Backtab || !!(event.modifiers & Qt.ShiftModifier))
+    else if (event.key === Qt.Key_Question || event.key === Qt.Key_F1) helpOpen = !helpOpen
     else if (event.key === Qt.Key_J || event.key === Qt.Key_Down) { root.forceActiveFocus(); selectedIndex = Math.max(0, Math.min(rows.length - 1, selectedIndex + 1)) }
     else if (event.key === Qt.Key_K || event.key === Qt.Key_Up) { root.forceActiveFocus(); selectedIndex = Math.max(0, selectedIndex - 1) }
     else if (event.key === Qt.Key_W && game) root.watchGame(game)
@@ -82,6 +100,12 @@ Item {
     Accessible.role: Accessible.Button
     Accessible.name: label
     Accessible.onPressAction: clicked()
+    Keys.onPressed: function(event) {
+      if (event.key === Qt.Key_Tab || event.key === Qt.Key_Backtab) {
+        root.focusNext(event.key === Qt.Key_Backtab || !!(event.modifiers & Qt.ShiftModifier))
+        event.accepted = true
+      }
+    }
     border.width: activeFocus ? 2 : 0
     border.color: Color.foreground
     Keys.onReturnPressed: clicked()

@@ -4,6 +4,7 @@
 
 - Local-date Agenda, persistent Watch Later, and opt-in game reminders with quiet hours.
 - Keyboard-accessible planner controls, shortcut help, wrapped labels, and stable selection after queue removals.
+- Keep Tab/Shift+Tab focus inside Agenda and Watch Later instead of switching to another plugin.
 - Suppress kickoff reminders for delayed, suspended, postponed, or canceled games.
 - Cached-first incremental loading, preserved navigation, and team-specific retries.
 - Venue and team records with spoiler protection; copyable, privacy-safe diagnostics.

@@ -748,13 +748,14 @@ Panel {
     owner: root.hostWidget || root
     bar: root.bar
     open: root.opened
-    focusTarget: keyCatcher
+    focusTarget: root.plannerOpen ? plannerView : keyCatcher
     contentWidth: panel.fittedContentWidth(Style.space(380))
     contentHeight: panel.fittedContentHeight(root.fullSlateOpen || root.plannerOpen ? Style.space(560)
       : content.implicitHeight + shortcutFooter.height, Style.space(560))
 
     PanelKeyCatcher {
       id: keyCatcher
+      blocked: root.plannerOpen
       anchors.fill: parent
       onCloseRequested: {
         if (root.plannerOpen) root.closePlanner()
@@ -762,7 +763,10 @@ Panel {
         else if (root.fullSlateOpen) root.toggleFullSlate()
         else root.close()
       }
-      onTabRequested: function(direction) { root.switchPanel(direction) }
+      onTabRequested: function(direction) {
+        if (root.plannerOpen) plannerView.focusNext(direction < 0)
+        else root.switchPanel(direction)
+      }
 
       Keys.onPressed: function(event) {
         if (root.plannerOpen) return

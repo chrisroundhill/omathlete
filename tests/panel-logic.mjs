@@ -3,6 +3,10 @@ import fs from 'node:fs';
 import vm from 'node:vm';
 
 const logic = vm.createContext({});
+const focusSource = fs.readFileSync(new URL('../Panel.qml',import.meta.url),'utf8');
+assert.match(focusSource,/focusTarget: root\.plannerOpen \? plannerView : keyCatcher/);
+assert.match(focusSource,/id: keyCatcher\s+blocked: root\.plannerOpen/);
+assert.match(focusSource,/if \(root\.plannerOpen\) plannerView\.focusNext\(direction < 0\)/);
 // Text is not a Controls label: QtQuick does not inherit the theme font.
 for (const file of ['Panel.qml', 'PlannerView.qml']) {
   const source = fs.readFileSync(new URL('../' + file, import.meta.url), 'utf8');

@@ -15,9 +15,19 @@ try {
 import QtQuick
 import QtTest
 Item {
+  id: host
   width:240; height:560
+  property int pluginSwitches: 0
+  Keys.onPressed: function(event) {
+    if (event.key === Qt.Key_G) { p.visible = true; event.accepted = true }
+    else if (event.key === Qt.Key_Tab || event.key === Qt.Key_Backtab) {
+      pluginSwitches++; event.accepted = true
+    }
+  }
+  Item { id: otherPlugin; activeFocusOnTab: true }
   PlannerView {
     id:p
+    visible:false
     anchors.fill:parent
     isHidden:function(game){ return true }
     rows:[{id:"1",sport:"mlb",homeTeam:"CHC",awayTeam:"SEA",homeScore:"99",awayScore:"88",
@@ -37,8 +47,21 @@ Item {
       return text
     }
     function test_planner() {
-      p.forceActiveFocus()
+      host.forceActiveFocus()
+      keyClick(Qt.Key_G)
       wait(100)
+      verify(p.activeFocus,"Opening with g transfers focus to the planner")
+      for(var n=0;n<40;n++) {
+        keyClick(Qt.Key_Tab)
+        verify(!otherPlugin.activeFocus,"Tab must not leave the planner")
+      }
+      for(var n=0;n<40;n++) {
+        keyClick(Qt.Key_Backtab,Qt.ShiftModifier)
+        verify(!otherPlugin.activeFocus,"Shift+Tab must not leave the planner")
+      }
+      compare(host.pluginSwitches,0,"Host plugin switching must not receive planner Tab")
+      p.forceActiveFocus()
+      p.selectedIndex = 0
       verify(texts(p).indexOf("88–99") < 0,"Hidden scores must not appear in delegate text")
       keyClick(Qt.Key_V)
       wait(30)
