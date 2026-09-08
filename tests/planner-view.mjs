@@ -100,7 +100,11 @@ Item {
       var list = findChild(p,"plannerGames")
       verify(list.contentY > 0,"Keyboard selection scrolls long queues")
       verify(list.currentItem.y >= list.contentY - 1)
-      verify(list.currentItem.y + list.currentItem.height <= list.contentY + list.height + 1)
+      // Font metrics vary across Qt versions. A wrapped card can be taller
+      // than the viewport; in that case its top must remain reachable.
+      verify(list.currentItem.y + Math.min(list.currentItem.height,list.height)
+        <= list.contentY + list.height + 1,
+        "Selected card must fit, or align at the top when taller than the viewport")
       verify(texts(p).indexOf("88–99") < 0)
       verify(texts(p).indexOf("Final 88-99") < 0)
       for(var n=0;n<35;n++) keyClick(Qt.Key_K)
