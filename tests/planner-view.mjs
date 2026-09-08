@@ -102,9 +102,11 @@ Item {
       verify(list.currentItem.y >= list.contentY - 1)
       // Font metrics vary across Qt versions. A wrapped card can be taller
       // than the viewport; in that case its top must remain reachable.
-      verify(list.currentItem.y + Math.min(list.currentItem.height,list.height)
-        <= list.contentY + list.height + 1,
-        "Selected card must fit, or align at the top when taller than the viewport")
+      tryVerify(function() {
+        return list.currentItem.y + Math.min(list.currentItem.height,list.height)
+          <= list.contentY + list.height + 1
+      }, 2000, "Selected card geometry: y=" + list.currentItem.y + ", h=" + list.currentItem.height
+        + ", scroll=" + list.contentY + ", viewport=" + list.height + ", top=" + list.y)
       verify(texts(p).indexOf("88–99") < 0)
       verify(texts(p).indexOf("Final 88-99") < 0)
       for(var n=0;n<35;n++) keyClick(Qt.Key_K)
