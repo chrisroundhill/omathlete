@@ -9,6 +9,7 @@
 - Cached-first incremental loading, preserved navigation, and team-specific retries.
 - Venue and team records with spoiler protection; copyable, privacy-safe diagnostics.
 - Live scoreboard scores and status reconciliation, interrupted fixtures, overnight games, and retained cached finals.
+- Find evening U.S. games on the previous-day ESPN scoreboard when their UTC date differs.
 - Explicit score freshness warnings, including compact and vertical bars.
 - Theme-consistent fonts and content-sized bar labels to reduce unused space.
 - Regression coverage for provider limits, failures, state transitions, keyboard behavior, spoilers, and bar geometry.

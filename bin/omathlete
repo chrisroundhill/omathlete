@@ -416,7 +416,7 @@ stale_team() {
 team_detail() {
   local team="$1" no_cache="$2" sport team_id name abbrev path cache_file age payload regular
   local season_year now league_cache league_payload league_age merged_payload normalized
-  local live_date live_scores='{"games":[]}' previous='{}'
+  local live_date live_scores='{"games":[]}' previous='{}' prior_date prior_scores
   sport=$(jq -r '.sport' <<<"$team")
   team_id=$(jq -r '.teamId' <<<"$team")
   name=$(jq -r '.teamName' <<<"$team")
@@ -501,6 +501,18 @@ team_detail() {
     | first // "" | .[:10] | gsub("-"; "")' <<<"$payload" 2>/dev/null) || live_date=""
   if [[ $live_date =~ ^[0-9]{8}$ ]]; then
     live_scores=$(slate_sport "$sport" "$live_date" "$no_cache") || live_scores='{"games":[]}'
+    # ESPN may file an evening U.S. game under the day before its UTC start
+    # date. Try exactly one adjacent day when a scheduled live event is absent.
+    if jq -e --argjson board "$live_scores" '
+      any(.events[]; . as $event | .competitions[0].status.type.state == "in"
+        and ([ $board.games[]? | select(.id == ($event.id | tostring) and .stale != true) ] | length == 0))
+      ' <<<"$payload" >/dev/null 2>&1; then
+      prior_date=$(date -u -d "${live_date:0:4}-${live_date:4:2}-${live_date:6:2} -1 day" +%Y%m%d)
+      prior_scores=$(slate_sport "$sport" "$prior_date" "$no_cache") || prior_scores='{"games":[],"stale":true}'
+      live_scores=$(printf '%s\n%s\n' "$live_scores" "$prior_scores" | jq -sc '
+        {games:([.[].games[]?] | group_by(.id) | map(sort_by(.stale) | first)),
+         stale:any(.[]; .stale == true)}')
+    fi
   fi
   if valid_json_file "$cache_file" "$MAX_TEAM_CACHE_BYTES"; then previous=$(cat "$cache_file"); fi
 
@@ -538,7 +550,7 @@ team_detail() {
           scoreCached: ($savedFinal != null),
           scoreUpdatedAt: (if $savedFinal != null then ($savedFinal.scoreUpdatedAt // $previous.updatedAt) else $now end),
           scoreStale: ($event.competitions[0].status.type.state == "in"
-            and ($liveScores.stale == true or ($liveScore == null and ($mine.score == null or $other.score == null)))),
+            and $liveScore == null and ($liveScores.stale == true or $mine.score == null or $other.score == null)),
           isHome: $isHome,
           venue: (($event.competitions[0].venue.fullName // "") | text(120)),
           teamRecord: (([$mine.records[]? | select(.type == "total" or .name == "overall") | .summary][0] // "") | text(40)),

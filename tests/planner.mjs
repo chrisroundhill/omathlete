@@ -109,6 +109,14 @@ try {
   assert.equal(liveDetail.current.teamScore,'14','Live scoreboard fills absent schedule scores');
   assert.equal(liveDetail.current.opponentScore,'7');
   assert.equal(liveDetail.agenda.find(g=>g.id===liveDetail.current.id).teamScore,'14');
+  const utcGameDay = new Date(Date.now()-3600000);
+  utcGameDay.setUTCDate(utcGameDay.getUTCDate()-1);
+  const previousScoreboardDay = utcGameDay.toISOString().slice(0,10).replaceAll('-','');
+  const evening = run(['detail','--no-cache'],{...missingScoresEnv,
+    OMATHLETE_FIXTURE_SCOREBOARD_DAY:previousScoreboardDay}).teams[0];
+  assert.equal(evening.current.teamScore,'14','Live game can be filed under the day before its UTC start');
+  assert.equal(evening.current.opponentScore,'7');
+  assert.equal(evening.current.scoreStale,false);
   const noScoreboard = run(['detail','--no-cache'],{...missingScoresEnv,OMATHLETE_FIXTURE_SCOREBOARD_FAILURE:'1'}).teams[0];
   assert.equal(noScoreboard.current.teamScore,'?','Missing score never becomes a fabricated zero or stale score');
   assert.equal(noScoreboard.current.opponentScore,'?');
