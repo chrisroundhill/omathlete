@@ -151,8 +151,10 @@ men's college basketball, the Premier League, and MLS.
 
 ## Requirements and data
 
-Omathlete uses `curl`, `jq`, `flock` (util-linux), and `omarchy-menu-select`, which ship with a stock
-Omarchy installation. It makes direct HTTPS requests to ESPN's undocumented
+Omathlete uses Python 3.11+ (standard library only), `curl`, `jq`, `flock`
+(util-linux), and `omarchy-menu-select`. Python provides no-follow,
+descriptor-relative storage operations; it must be available as `/usr/bin/python3`.
+It makes direct HTTPS requests to ESPN's undocumented
 site JSON API. No account, API key, backend, telemetry, package installation,
 or elevated privilege is used.
 
@@ -167,6 +169,11 @@ Short-lived schedule responses are stored in:
 ```text
 ~/.cache/omarchy/omathlete/
 ```
+
+The corresponding `XDG_STATE_HOME` and `XDG_CACHE_HOME` overrides are supported
+only as absolute, non-symlinked paths with trusted ownership. Unsafe storage
+fails closed: no automatic `chmod`, symlink repair, or preference migration is
+attempted. See [SECURITY.md](SECURITY.md) before relocating these directories.
 
 ESPN's site API is not a supported public developer contract and may change.
 Team and league names and logos belong to their respective owners. See
@@ -186,6 +193,7 @@ qs log -p "$OMARCHY_PATH/shell" --tail 100
 Run deterministic provider coverage and the optional live integration check:
 
 ```sh
+python3 -I tests/storage.py
 tests/provider-fixtures.sh
 bash tests/reliability.sh
 node tests/panel-logic.mjs
@@ -196,6 +204,11 @@ node tests/planner.mjs
 node tests/planner-view.mjs
 tests/smoke.sh
 ```
+
+`bash tests/check.sh` runs the complete offline regression gate in one command.
+The Omarchy runtime/manifest checks and manual desktop acceptance in
+[RELEASE.md](RELEASE.md) remain separate. [AGENTS.md](AGENTS.md) records the
+development guardrails for future changes.
 
 Node.js is needed only for development tests, not to run the plugin.
 The slate rendering test also uses Qt 6's `qmltestrunner` and QtTest module;

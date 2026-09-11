@@ -47,7 +47,16 @@ try {
     let end;
     while ((end = buffer.indexOf('\n')) >= 0) {
       const line = buffer.slice(0, end); buffer = buffer.slice(end + 1);
-      if (line) messages.push({at: performance.now() - started, value: JSON.parse(line)});
+      if (line) {
+        const value = JSON.parse(line);
+        if (value.type === 'team') {
+          const persisted = JSON.parse(fs.readFileSync(path.join(cache,
+            `${value.team.sport}-${value.team.teamId}.json`), 'utf8'));
+          assert.equal(persisted.updatedAt, value.team.updatedAt,
+            'A displayed team must already be available to watch/reminder commands');
+        }
+        messages.push({at: performance.now() - started, value});
+      }
     }
   });
   const timeout = setTimeout(() => proc.kill(), 15000);

@@ -1,5 +1,28 @@
 # 0.1.2 release checklist
 
+## Next release: storage-hardening gate
+
+Storage-hardening desktop acceptance: owner confirmed loading/refresh,
+settings persistence across restart, Watch Later, reminder configuration,
+keyboard traversal, and spoiler checks passed on the dev build.
+Local automated evidence: full offline suite passed; the final focused run
+passed all 12 storage tests and incremental-loading checks. Omarchy manifest
+validation and QML lint passed. This does not constitute a security audit.
+
+The acceptance recorded below applies to 0.1.2, not automatically to later code.
+For the next release:
+
+- Run `bash tests/check.sh`, including hostile storage paths, no-follow reads,
+  descriptor-pinned ancestor replacement, safe publication, and concurrency.
+- Run `omarchy plugin validate .` and QML lint against the installed shell.
+- Confirm Python 3.11+ is available without runtime package installation.
+- Recheck desktop loading, settings persistence, reminders, and restart behavior.
+- Review SECURITY.md filesystem assumptions, dependencies, endpoint allowlists,
+  decoded-response limits, and cancellation/cleanup before tagging a new version.
+- Do not move the existing v0.1.2 tag. Publish a new version and update the
+  marketplace request with its exact merged SHA, retaining the form's headings.
+- Automated checks do not replace review of changed trust boundaries.
+
 Work stays on `dev` until the release is deliberately promoted. This document
 does not authorize a merge, push, tag, GitHub release, or marketplace submission.
 
