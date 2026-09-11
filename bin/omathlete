@@ -13,6 +13,8 @@ readonly MAX_CATALOG_CACHE_BYTES=$((2 * 1024 * 1024))
 readonly MAX_TEAM_CACHE_BYTES=$((64 * 1024))
 readonly MAX_SLATE_CACHE_BYTES=$((512 * 1024))
 readonly MAX_QML_OUTPUT_BYTES=$((1024 * 1024))
+readonly MAX_STREAM_OUTPUT_BYTES=$((2 * 1024 * 1024))
+readonly MAX_SLATE_REQUESTS=3
 readonly MAX_CATALOG_TEAMS=5000
 readonly MAX_MERGED_EVENTS=1000
 readonly MAX_UPCOMING_GAMES=3
@@ -21,6 +23,7 @@ readonly MAX_SLATE_GAMES_PER_LEAGUE=100
 readonly MAX_SLATE_GAMES=500
 readonly ESPN_ROOT="https://site.api.espn.com/apis/site/v2/sports"
 readonly CATALOG_FILE="$CACHE_DIR/teams.json"
+readonly SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 CURL_BIN="/usr/bin/curl"
 if [[ ${OMATHLETE_TESTING:-0} == 1 && -n ${OMATHLETE_CURL_BIN:-} ]]; then
   CURL_BIN="$OMATHLETE_CURL_BIN"
@@ -38,7 +41,7 @@ ensure_storage() {
 
 read_state() {
   ensure_storage
-  if ! jq -e '
+  if [[ $(stat -c %s "$STATE_FILE") -gt 262144 ]] || ! jq -e '
       .schemaVersion == 1
       and (.spoilersHidden | type) == "boolean"
       and ((.sortMode // "manual") | test("^(manual|next|league)$"))
@@ -59,14 +62,15 @@ read_state() {
     printf '%s\n' '{"schemaVersion":1,"spoilersHidden":false,"sortMode":"manual","pinnedTeam":null,"teams":[]}'
     return
   fi
-  jq -c '
+  jq -c -L "$SCRIPT_DIR" 'include "planner";
     .teams = .teams[:12]
     | .sortMode = (if (.sortMode // "manual") | test("^(manual|next|league)$")
         then (.sortMode // "manual") else "manual" end)
     | .pinnedTeam = ((.pinnedTeam // null) as $pin
         | if $pin != null and any(.teams[]; .sport == $pin.sport and .teamId == $pin.teamId)
           then {sport:$pin.sport,teamId:$pin.teamId} else null end)
-    | {schemaVersion,spoilersHidden,sortMode,pinnedTeam,teams}
+    | planner_state
+    | {schemaVersion,spoilersHidden,sortMode,pinnedTeam,teams,watchLater,reminders,quietHours}
   ' "$STATE_FILE"
 }
 
@@ -187,9 +191,10 @@ catalog_sports() {
 }
 
 refresh_catalog() {
-  local work sport path label part pid failed=0
+  local work sport path label part index failed=0
   work=$(mktemp -d "$CACHE_DIR/.catalog.XXXXXX") || return 1
   declare -a pids=()
+  declare -a sports=()
 
   while IFS= read -r sport; do
     path=$(espn_path "$sport") || continue
@@ -201,7 +206,8 @@ refresh_catalog() {
     part="$work/$sport.json"
     (
       fetch_json "$ESPN_ROOT/$path/teams?limit=1000" 12 \
-        | jq -c --arg sport "$sport" --arg league "$label" '
+        | jq -ce --arg sport "$sport" --arg league "$label" '
+          if (.sports[0].leagues[0].teams | type) != "array" then error("Invalid teams") else . end |
           [(.sports[0].leagues[0].teams // [])[:1000][].team
           | select((.id | tostring) | test("^[0-9]{1,12}$")) | {
             sport:$sport,
@@ -212,11 +218,26 @@ refresh_catalog() {
           }]'
     ) >"$part" &
     pids+=("$!")
+    sports+=("$sport")
   done < <(catalog_sports)
 
-  for pid in "${pids[@]}"; do
-    wait "$pid" || failed=1
+  for index in "${!pids[@]}"; do
+    if ! wait "${pids[index]}"; then
+      failed=$((failed + 1))
+      sport="${sports[index]}"
+      part="$work/$sport.json"
+      if valid_json_file "$CATALOG_FILE" "$MAX_CATALOG_CACHE_BYTES"; then
+        jq -c --arg sport "$sport" '[.[] | select(.sport == $sport)]' "$CATALOG_FILE" >"$part"
+      else
+        printf '[]\n' >"$part"
+      fi
+    fi
   done
+
+  if (( failed == ${#pids[@]} )); then
+    rm -rf "$work"
+    return 1
+  fi
 
   if ! jq -sc --argjson max "$MAX_CATALOG_TEAMS" \
       'add | map(select(.teamId and .teamName)) | unique_by(.sport + ":" + .teamId) | .[:$max]' \
@@ -226,6 +247,10 @@ refresh_catalog() {
     return 1
   fi
   mv -f "$work/teams.json" "$CATALOG_FILE"
+  # Retry partial catalogs soon while keeping successfully fetched leagues usable.
+  if (( failed > 0 )); then
+    touch -d "@$(( $(date +%s) - CATALOG_TTL + 300 ))" "$CATALOG_FILE"
+  fi
   rm -rf "$work"
   (( failed == 0 ))
 }
@@ -272,7 +297,7 @@ follow_team() {
   count=$(jq '.teams | length' <<<"$state")
   (( count < MAX_TEAMS )) || { notify "You can follow up to $MAX_TEAMS teams."; return 1; }
   updated=$(jq -c --argjson team "$team" '.teams += [$team | del(.league)]' <<<"$state")
-  write_state "$updated"
+  write_state "$updated" || return 1
   notify "Following $(jq -r '.teamName' <<<"$team")"
 }
 
@@ -305,7 +330,7 @@ add_team() {
 
   updated=$(jq -c --arg sport "$sport" --arg id "$team_id" --arg name "$name" --arg abbrev "$abbrev" \
     '.teams += [{sport:$sport, teamId:$id, teamName:$name, teamAbbrev:$abbrev}]' <<<"$state")
-  write_state "$updated"
+  write_state "$updated" || return 1
   notify "Following $name"
 }
 
@@ -318,7 +343,7 @@ remove_team() {
     '.teams |= map(select(.sport != $sport or .teamId != $id))
       | if .pinnedTeam != null and .pinnedTeam.sport == $sport and .pinnedTeam.teamId == $id
         then .pinnedTeam = null else . end' <<<"$state")
-  write_state "$updated"
+  write_state "$updated" || return 1
   rm -f "$CACHE_DIR/${sport}-${team_id}.json"
   notify "Stopped following $name"
 }
@@ -327,7 +352,7 @@ toggle_spoilers() {
   local state updated hidden
   state=$(read_state)
   updated=$(jq -c '.spoilersHidden = (.spoilersHidden | not)' <<<"$state")
-  write_state "$updated"
+  write_state "$updated" || return 1
   hidden=$(jq -r '.spoilersHidden' <<<"$updated")
   [[ $hidden == true ]] && notify "Scores hidden" || notify "Scores visible"
 }
@@ -337,7 +362,7 @@ cycle_sort() {
   state=$(read_state)
   updated=$(jq -c '.sortMode = (if .sortMode == "manual" then "next"
     elif .sortMode == "next" then "league" else "manual" end)' <<<"$state")
-  write_state "$updated"
+  write_state "$updated" || return 1
   mode=$(jq -r '.sortMode' <<<"$updated")
   notify "Sort: ${mode^}"
 }
@@ -357,7 +382,7 @@ move_team() {
         end
       end
   ' <<<"$state")
-  write_state "$updated"
+  write_state "$updated" || return 1
 }
 
 toggle_pin() {
@@ -369,7 +394,7 @@ toggle_pin() {
   updated=$(jq -c --arg sport "$sport" --arg id "$team_id" '
     if .pinnedTeam != null and .pinnedTeam.sport == $sport and .pinnedTeam.teamId == $id
     then .pinnedTeam = null else .pinnedTeam = {sport:$sport,teamId:$id} end' <<<"$state")
-  write_state "$updated"
+  write_state "$updated" || return 1
   if [[ $(jq -r '.pinnedTeam == null' <<<"$updated") == true ]]; then
     notify "Idle bar pin cleared"
   else
@@ -377,9 +402,21 @@ toggle_pin() {
   fi
 }
 
+stale_team() {
+  local team="$1" cache_file="$2"
+  if valid_json_file "$cache_file" "$MAX_TEAM_CACHE_BYTES" \
+      && jq -e '.teamId and (.schedule | type == "array")' "$cache_file" >/dev/null 2>&1; then
+    jq -c '. + {stale:true}' "$cache_file"
+  else
+    jq -c '. + {teamLogo:"",teamColor:"",teamAlternateColor:"",current:null,
+      upcoming:null,schedule:[],stale:true,updatedAt:null}' <<<"$team"
+  fi
+}
+
 team_detail() {
   local team="$1" no_cache="$2" sport team_id name abbrev path cache_file age payload regular
-  local season_year now league_cache league_payload league_age merged_payload
+  local season_year now league_cache league_payload league_age merged_payload normalized
+  local live_date live_scores='{"games":[]}' previous='{}' prior_date prior_scores
   sport=$(jq -r '.sport' <<<"$team")
   team_id=$(jq -r '.teamId' <<<"$team")
   name=$(jq -r '.teamName' <<<"$team")
@@ -395,13 +432,9 @@ team_detail() {
     fi
   fi
 
-  if ! payload=$(fetch_json "$ESPN_ROOT/$path/teams/$team_id/schedule" 10); then
-    if valid_json_file "$cache_file" "$MAX_TEAM_CACHE_BYTES"; then
-      jq -c '. + {stale:true}' "$cache_file"
-      return
-    fi
-    jq -cn --arg sport "$sport" --arg id "$team_id" --arg name "$name" --arg abbrev "$abbrev" \
-      '{sport:$sport,teamId:$id,teamName:$name,teamAbbrev:$abbrev,teamLogo:"",teamColor:"",teamAlternateColor:"",current:null,upcoming:null,schedule:[],stale:true}'
+  if ! payload=$(fetch_json "$ESPN_ROOT/$path/teams/$team_id/schedule" 10) \
+      || ! jq -e 'type == "object" and (.events | type == "array")' <<<"$payload" >/dev/null 2>&1; then
+    stale_team "$team" "$cache_file"
     return
   fi
 
@@ -457,7 +490,35 @@ team_detail() {
     fi
   fi
 
-  jq -c --arg sport "$sport" --arg id "$team_id" --arg name "$name" --arg abbrev "$abbrev" \
+  # Team schedules can update the inning/clock while omitting live scores.
+  # Reuse the bounded daily scoreboard, matching exact event IDs below.
+  live_date=$(jq -r --argjson now "$now" '
+    [.events | sort_by((if .competitions[0].status.type.state == "in" then 1 else 0 end), .date) | reverse | .[]
+      | .date | select(type == "string")
+      | (if test("T[0-9]{2}:[0-9]{2}Z$") then sub("Z$"; ":00Z") else . end)
+      | select((try fromdateiso8601 catch 0) >= ($now - 86400)
+        and (try fromdateiso8601 catch 0) <= ($now + 3600))]
+    | first // "" | .[:10] | gsub("-"; "")' <<<"$payload" 2>/dev/null) || live_date=""
+  if [[ $live_date =~ ^[0-9]{8}$ ]]; then
+    live_scores=$(slate_sport "$sport" "$live_date" "$no_cache") || live_scores='{"games":[]}'
+    # ESPN may file an evening U.S. game under the day before its UTC start
+    # date. Try exactly one adjacent day when a scheduled live event is absent.
+    if jq -e --argjson board "$live_scores" '
+      any(.events[]; . as $event | .competitions[0].status.type.state == "in"
+        and ([ $board.games[]? | select(.id == ($event.id | tostring) and .stale != true) ] | length == 0))
+      ' <<<"$payload" >/dev/null 2>&1; then
+      prior_date=$(date -u -d "${live_date:0:4}-${live_date:4:2}-${live_date:6:2} -1 day" +%Y%m%d)
+      prior_scores=$(slate_sport "$sport" "$prior_date" "$no_cache") || prior_scores='{"games":[],"stale":true}'
+      live_scores=$(printf '%s\n%s\n' "$live_scores" "$prior_scores" | jq -sc '
+        {games:([.[].games[]?] | group_by(.id) | map(sort_by(.stale) | first)),
+         stale:any(.[]; .stale == true)}')
+    fi
+  fi
+  if valid_json_file "$cache_file" "$MAX_TEAM_CACHE_BYTES"; then previous=$(cat "$cache_file"); fi
+
+  if normalized=$(jq -ce --arg sport "$sport" --arg id "$team_id" --arg name "$name" --arg abbrev "$abbrev" \
+    --argjson liveScores "$live_scores" \
+    --argjson previous "$previous" \
     --argjson now "$now" --argjson maxUpcoming "$MAX_UPCOMING_GAMES" \
     --argjson maxSchedule "$MAX_TEAM_SCHEDULE_GAMES" '
       def epoch:
@@ -465,21 +526,44 @@ team_detail() {
         | try fromdateiso8601 catch 0;
       def side($event; $where): [$event.competitions[0].competitors[]? | select(.homeAway == $where)][0];
       def text($length): tostring | .[:$length];
+      def scoreboard($event): [$liveScores.games[]? | select(.id == ($event.id | tostring) and .stale != true)][0];
+      def interrupted: (.competitions[0].status.type.name // "") | test("POSTPONED|CANCELED|CANCELLED|SUSPENDED");
       def view($event):
         (side($event; "home")) as $home |
         (side($event; "away")) as $away |
         ($home.team.id == $id) as $isHome |
         (if $isHome then $home else $away end) as $mine |
         (if $isHome then $away else $home end) as $other |
+        scoreboard($event) as $liveScore |
+        ([($previous.schedule // [])[], ($previous.agenda // [])[], $previous.current
+          | select(. != null and .id == ($event.id | tostring) and .state == "post"
+            and .teamScore != "?" and .opponentScore != "?")][0]) as $oldFinal |
+        (if $event.competitions[0].status.type.state == "post" and $liveScore == null
+          and ($mine.score == null or $other.score == null) then $oldFinal else null end) as $savedFinal |
         {
-          state: (($event.competitions[0].status.type.state // "pre") | text(12)),
-          detail: (($event.competitions[0].status.type.shortDetail // "Scheduled") | text(120)),
+          id: (($event.id // "") | text(64)),
+          homeTeam: (($home.team.abbreviation // $home.team.displayName // "TBD") | text(40)),
+          awayTeam: (($away.team.abbreviation // $away.team.displayName // "TBD") | text(40)),
+          state: (($liveScore.state // $event.competitions[0].status.type.state // "pre") | text(12)),
+          detail: (($liveScore.detail // $event.competitions[0].status.type.shortDetail // "Scheduled") | text(120)),
+          statusName: (($event.competitions[0].status.type.name // "") | text(64)),
+          scoreCached: ($savedFinal != null),
+          scoreUpdatedAt: (if $savedFinal != null then ($savedFinal.scoreUpdatedAt // $previous.updatedAt) else $now end),
+          scoreStale: ($event.competitions[0].status.type.state == "in"
+            and $liveScore == null and ($liveScores.stale == true or $mine.score == null or $other.score == null)),
           isHome: $isHome,
+          venue: (($event.competitions[0].venue.fullName // "") | text(120)),
+          teamRecord: (([$mine.records[]? | select(.type == "total" or .name == "overall") | .summary][0] // "") | text(40)),
+          opponentRecord: (([$other.records[]? | select(.type == "total" or .name == "overall") | .summary][0] // "") | text(40)),
           opponent: (($other.team.abbreviation // $other.team.displayName // "TBD") | text(40)),
-          teamScore: (if ($mine.score | type) == "object"
-            then (($mine.score.displayValue // "0") | text(20)) else (($mine.score // "0") | text(20)) end),
-          opponentScore: (if ($other.score | type) == "object"
-            then (($other.score.displayValue // "0") | text(20)) else (($other.score // "0") | text(20)) end),
+          teamScore: ((if $liveScore then (if $isHome then $liveScore.homeScore else $liveScore.awayScore end)
+            elif $savedFinal then $savedFinal.teamScore
+            elif ($mine.score | type) == "object" then ($mine.score.displayValue // $mine.score.value)
+            else $mine.score end) // "?" | text(20)),
+          opponentScore: ((if $liveScore then (if $isHome then $liveScore.awayScore else $liveScore.homeScore end)
+            elif $savedFinal then $savedFinal.opponentScore
+            elif ($other.score | type) == "object" then ($other.score.displayValue // $other.score.value)
+            else $other.score end) // "?" | text(20)),
           date: ($event.date | text(64)),
           when: (($event.date | epoch) | strflocaltime("%a, %b %-d · %-I:%M %p")),
           broadcast: (($event.competitions[0].broadcasts[0].media.shortName
@@ -490,7 +574,11 @@ team_detail() {
             | select((.rel // []) | index("desktop"))
             | .href][0] // "") | text(512))
         };
-      (.events // []) as $events |
+      # Reconcile state before choosing live/recent/upcoming sections.
+      [(.events // [])[] | . as $event | scoreboard($event) as $score
+        | if $score != null then .competitions[0].status.type += {
+            state:$score.state, shortDetail:$score.detail, name:($score.statusName // "")}
+          else . end] as $events |
       (.team // {}) as $team |
       (($team.logo // "") | text(512)) as $logo |
       (if ($logo | test("^https://a\\.espncdn\\.com/")) then $logo else "" end) as $teamLogo |
@@ -499,14 +587,21 @@ team_detail() {
       (if (($team.alternateColor // "") | test("^[0-9A-Fa-f]{6}$"))
         then ("#" + $team.alternateColor) else "" end) as $teamAlternateColor |
       ([$events[] | select(.competitions[0].status.type.state == "in")
+        | select(interrupted | not)
         | select((.date | epoch) <= ($now + 3600))] | sort_by(.date) | last) as $live |
       ([$events[] | select(.competitions[0].status.type.state == "post")
+        | select(interrupted | not)
         | select((.date | epoch) <= ($now + 3600))] | sort_by(.date) | last) as $recent |
       ([$events[] | select(.competitions[0].status.type.state == "pre")
-        | select((.date | epoch) >= ($now - 3600))] | sort_by(.date) | .[:$maxUpcoming]) as $nextGames |
+        | select(interrupted | not)
+        | select((.date | epoch) >= ($now - 3600)
+          or ((.competitions[0].status.type.name // "") == "STATUS_DELAYED" and (.date | epoch) >= ($now - 86400)))] | sort_by(.date) | .[:$maxUpcoming]) as $nextGames |
+      ([$events[] | select(interrupted) | select((.date | epoch) >= ($now - 86400))]
+        | sort_by(.date) | .[:1]) as $interruptions |
       ($nextGames[0] // null) as $next |
       ((if $live then [(view($live) + {kind:"live", section:"LIVE"})] else [] end)
         + (if $recent then [(view($recent) + {kind:"recent", section:"LATEST"})] else [] end)
+        + [$interruptions[] | (view(.) + {kind:"interrupted",section:"SCHEDULE CHANGE"})]
         + [$nextGames[] | (view(.) + {kind:"upcoming", section:"UPCOMING"})]
         | .[:$maxSchedule]) as $schedule |
       {
@@ -519,9 +614,16 @@ team_detail() {
           else (($next.date | epoch) | strflocaltime("%a")) end)
         }) else null end),
         schedule:$schedule,
-        stale:false
+        agenda: ([$events[] | select((.date | epoch) >= ($now - 86400)
+          and (.date | epoch) <= ($now + 8 * 86400))] | sort_by(.date) | .[:32] | map(view(.))),
+        stale:false, updatedAt:$now
       }
-    ' <<<"$payload" 2>/dev/null | bounded_output "$MAX_TEAM_CACHE_BYTES" | tee "$cache_file"
+    ' <<<"$payload" 2>/dev/null | bounded_output "$MAX_TEAM_CACHE_BYTES") \
+      && [[ -n $normalized ]] && write_cache "$cache_file" "$normalized" "$MAX_TEAM_CACHE_BYTES"; then
+    printf '%s\n' "$normalized"
+  else
+    stale_team "$team" "$cache_file"
+  fi
 }
 
 detail() {
@@ -586,31 +688,107 @@ detail() {
   fi
 }
 
+team_snapshot() {
+  local team="$1" path age
+  path="$CACHE_DIR/$(jq -r '.sport + "-" + .teamId' <<<"$team").json"
+  if valid_json_file "$path" "$MAX_TEAM_CACHE_BYTES" \
+      && jq -e '.teamId and (.schedule | type == "array")' "$path" >/dev/null 2>&1; then
+    age=$(( $(date +%s) - $(stat -c %Y "$path") ))
+    jq -c --argjson stale "$([[ $age -ge $CACHE_TTL ]] && printf true || printf false)" \
+      '. + {stale:$stale,loading:true}' "$path"
+  else
+    jq -c '. + {current:null,upcoming:null,schedule:[],stale:false,loading:true,updatedAt:null}' <<<"$team"
+  fi
+}
+
+# One parent writes complete JSON lines: children never interleave stdout.
+# At most one snapshot + twelve team updates + a completion message are emitted.
+stream_emit() {
+  local LC_ALL=C
+  local line="$1" size
+  size=$((${#line} + 1))
+  (( size <= MAX_QML_OUTPUT_BYTES && stream_bytes + size <= MAX_STREAM_OUTPUT_BYTES )) || return 1
+  stream_bytes=$((stream_bytes + size))
+  printf '%s\n' "$line"
+}
+
+detail_stream() (
+  local state work index team finished force=false key requested stream_bytes=0
+  local -a teams=() snapshots=() live_keys=()
+  local -A jobs=()
+  [[ ${1:-} == --no-cache ]] && force=true
+  if [[ ${1:-} == --live ]]; then shift; live_keys=("$@"); fi
+  state=$(read_state)
+  if [[ ${1:-} == --team ]]; then
+    state=$(jq -c --arg key "${2:-}" '.teams |= map(select((.sport + ":" + .teamId) == $key))' <<<"$state")
+    force=true
+  fi
+  work=$(mktemp -d "$CACHE_DIR/.stream.XXXXXX") || exit 1
+  trap 'if ((${#jobs[@]})); then kill "${!jobs[@]}" 2>/dev/null || true; wait "${!jobs[@]}" 2>/dev/null || true; fi; rm -rf "$work"' EXIT
+  mapfile -t teams < <(jq -c '.teams[]' <<<"$state")
+  for team in "${teams[@]}"; do snapshots+=("$(team_snapshot "$team")"); done
+  stream_emit "$(printf '%s\n' "${snapshots[@]}" | jq -sc '{type:"snapshot",teams:.}')" || exit 1
+  for index in "${!teams[@]}"; do
+    team="${teams[index]}"
+    local force_team="$force"
+    key=$(jq -r '.sport + ":" + .teamId' <<<"$team")
+    for requested in "${live_keys[@]}"; do
+      [[ $requested == "$key" ]] && force_team=true
+    done
+    (team_detail "$team" "$force_team" >"$work/$index.json") &
+    jobs[$!]="$index"
+  done
+  while ((${#jobs[@]})); do
+    finished=""
+    wait -n -p finished "${!jobs[@]}" || true
+    [[ -n $finished ]] || exit 1
+    index="${jobs[$finished]}"
+    unset 'jobs[$finished]'
+    if valid_json_file "$work/$index.json" "$MAX_TEAM_CACHE_BYTES" \
+        && jq -e 'type == "object" and .teamId and (.schedule | type == "array")' \
+          "$work/$index.json" >/dev/null 2>&1; then
+      team=$(cat "$work/$index.json")
+    else
+      key=$(jq -r '.sport + "-" + .teamId' <<<"${teams[index]}")
+      team=$(stale_team "${teams[index]}" "$CACHE_DIR/$key.json")
+    fi
+    stream_emit "$(jq -c '{type:"team",team:(. + {loading:false})}' <<<"$team")" || exit 1
+  done
+  stream_emit '{"type":"done"}'
+)
+
+cached_slate() {
+  local cache_file="$1" stale="$2"
+  valid_json_file "$cache_file" "$MAX_SLATE_CACHE_BYTES" || return 1
+  jq -ce --argjson stale "$stale" '
+    if type == "array" then {games:.,updatedAt:null} else . end
+    | if (.games | type) != "array" then error("Invalid slate") else . end
+    | .stale = $stale | .games |= map(. + {stale:$stale})
+  ' "$cache_file"
+}
+
 slate_sport() {
-  local sport="$1" date_key="$2" force="$3" path label cache_file age payload
+  local sport="$1" date_key="$2" force="$3" path label cache_file age payload normalized
   path=$(espn_path "$sport") || return 1
   label=$(sport_label "$sport")
   cache_file="$CACHE_DIR/slate-${sport}-${date_key}.json"
 
   if [[ $force == false && -f $cache_file ]]; then
     age=$(( $(date +%s) - $(stat -c %Y "$cache_file") ))
-    if (( age < CACHE_TTL )) && valid_json_file "$cache_file" "$MAX_SLATE_CACHE_BYTES"; then
-      cat "$cache_file"
+    if (( age < CACHE_TTL )) && normalized=$(cached_slate "$cache_file" false); then
+      printf '%s\n' "$normalized"
       return
     fi
   fi
 
-  if ! payload=$(fetch_json "$ESPN_ROOT/$path/scoreboard?dates=$date_key&limit=500" 10); then
-    if valid_json_file "$cache_file" "$MAX_SLATE_CACHE_BYTES"; then
-      jq -c 'map(. + {stale:true})' "$cache_file"
-      return
-    fi
-    printf '%s\n' '[]'
+  if ! payload=$(fetch_json "$ESPN_ROOT/$path/scoreboard?dates=$date_key&limit=500" 10) \
+      || ! jq -e 'type == "object" and (.events | type == "array")' <<<"$payload" >/dev/null 2>&1; then
+    cached_slate "$cache_file" true || printf '%s\n' '{"games":[],"stale":true,"updatedAt":null}'
     return
   fi
 
-  jq -c --arg sport "$sport" --arg league "$label" \
-    --argjson max "$MAX_SLATE_GAMES_PER_LEAGUE" '
+  if normalized=$(jq -ce --arg sport "$sport" --arg league "$label" \
+    --argjson now "$(date +%s)" --argjson max "$MAX_SLATE_GAMES_PER_LEAGUE" '
       def epoch:
       (if test("T[0-9]{2}:[0-9]{2}Z$") then sub("Z$"; ":00Z") else . end)
       | try fromdateiso8601 catch 0;
@@ -623,9 +801,10 @@ slate_sport() {
           id:($event.id | text(64)), sport:$sport, league:$league,
           homeTeam:(($home.team.abbreviation // $home.team.shortDisplayName // "TBD") | text(40)),
           awayTeam:(($away.team.abbreviation // $away.team.shortDisplayName // "TBD") | text(40)),
-          homeScore:(($home.score // "0") | text(20)),
-          awayScore:(($away.score // "0") | text(20)),
+          homeScore:(($home.score // "?") | text(20)),
+          awayScore:(($away.score // "?") | text(20)),
           state:(($event.competitions[0].status.type.state // "pre") | text(12)),
+          statusName:(($event.competitions[0].status.type.name // "") | text(64)),
           detail:(($event.competitions[0].status.type.shortDetail // "Scheduled") | text(120)),
           date:($event.date | text(64)),
           when:(($event.date | epoch) | strflocaltime("%-I:%M %p")),
@@ -643,37 +822,65 @@ slate_sport() {
     | sort_by(.rank, .date)
     | .[:$max]
     | map(del(.rank))
-  ' <<<"$payload" | bounded_output "$MAX_SLATE_CACHE_BYTES" | tee "$cache_file"
+    | {games:.,stale:false,updatedAt:$now}
+  ' <<<"$payload" 2>/dev/null | bounded_output "$MAX_SLATE_CACHE_BYTES") \
+      && [[ -n $normalized ]] && write_cache "$cache_file" "$normalized" "$MAX_SLATE_CACHE_BYTES"; then
+    printf '%s\n' "$normalized"
+  else
+    cached_slate "$cache_file" true || printf '%s\n' '{"games":[],"stale":true,"updatedAt":null}'
+  fi
 }
 
-full_slate() {
-  local force=false state hidden date_key sport games item stale=false
-  local -a parts=()
+full_slate() (
+  local force=false state hidden date_key sport work finished
+  local -A jobs=()
   [[ ${1:-} == "--no-cache" ]] && force=true
   state=$(read_state)
   hidden=$(jq -r '.spoilersHidden' <<<"$state")
   date_key=$(date +%Y%m%d)
+  work=$(mktemp -d "$CACHE_DIR/.slate.XXXXXX") || exit 1
+  trap 'if ((${#jobs[@]})); then kill "${!jobs[@]}" 2>/dev/null || true; wait "${!jobs[@]}" 2>/dev/null || true; fi; rm -rf "$work"' EXIT
 
   while IFS= read -r sport; do
     [[ -n $sport ]] || continue
-    item=$(slate_sport "$sport" "$date_key" "$force") || item='[]'
-    [[ $(jq -r 'any(.[]; .stale == true)' <<<"$item") == true ]] && stale=true
-    parts+=("$item")
+    (
+      item=$(slate_sport "$sport" "$date_key" "$force") || item='{"games":[],"stale":true}'
+      jq -c --arg league "$(sport_label "$sport")" '. + {league:$league}' <<<"$item"
+    ) >"$work/$sport.json" &
+    jobs[$!]="$sport"
+    if ((${#jobs[@]} >= MAX_SLATE_REQUESTS)); then
+      finished=""
+      wait -n -p finished "${!jobs[@]}" || true
+      [[ -n $finished ]] || exit 1
+      unset 'jobs[$finished]'
+    fi
   done < <(jq -r '.teams | map(.sport) | unique[]' <<<"$state")
 
-  if ((${#parts[@]})); then
-    games=$(printf '%s\n' "${parts[@]}" | jq -sc --argjson max "$MAX_SLATE_GAMES" \
-      'add | unique_by(.sport + ":" + .id)
-      | sort_by((if .state == "in" then 0 elif .state == "pre" then 1 else 2 end), .date)
-      | .[:$max]')
-  else
-    games='[]'
+  if ((${#jobs[@]})); then
+    wait "${!jobs[@]}" || true
+    jobs=()
   fi
-  jq -cn --arg date "$date_key" --argjson hidden "$hidden" --argjson stale "$stale" \
-    --argjson games "$games" \
-    '{date:$date,spoilersHidden:$hidden,stale:$stale,games:$games,leagues:($games | map(.league) | unique)}' \
+  # A sentinel handles zero followed leagues without a special unbounded argv path.
+  printf '{"games":[],"stale":false}\n' >"$work/empty.json"
+  jq -sc --arg date "$date_key" --argjson hidden "$hidden" --argjson max "$MAX_SLATE_GAMES" '
+    . as $parts | ([$parts[] | select(.stale) | .league] | sort) as $failed |
+    ([.[].games[]] | unique_by(.sport + ":" + .id)
+      | sort_by((if .state == "in" then 0 elif .state == "pre" then 1 else 2 end), .date)
+      | .[:$max]) as $games |
+    {date:$date,spoilersHidden:$hidden,stale:($failed | length > 0),failedLeagues:$failed,
+      games:$games,leagues:($games | map(.league) | unique)}' "$work"/*.json \
     | bounded_output "$MAX_QML_OUTPUT_BYTES"
-}
+)
+
+# Serialize read/modify/write preferences even when separate plugin processes overlap.
+source "$SCRIPT_DIR/planner.sh"
+case "${1:-}" in
+  add|follow|remove|toggle-spoilers|cycle-sort|move|toggle-pin|watch-game|remind-game|toggle-quiet|check-reminders)
+    ensure_storage
+    exec 9>"$STATE_DIR/.omathlete.lock"
+    /usr/bin/flock -w 30 9 || exit 1
+    ;;
+esac
 
 case "${1:-}" in
   add) add_team ;;
@@ -685,10 +892,20 @@ case "${1:-}" in
   move) move_team "${2:?sport required}" "${3:?team id required}" "${4:?direction required}" ;;
   toggle-pin) toggle_pin "${2:?sport required}" "${3:?team id required}" ;;
   detail) shift; detail "$@" ;;
+  detail-stream) shift; detail_stream "$@" ;;
   slate) full_slate "${2:-}" ;;
   state) read_state ;;
+  watch-game|remind-game|toggle-quiet) planner_change "$@" ;;
+  check-reminders) check_reminders ;;
   *)
-    printf 'Usage: %s {add|search <query>|follow <sport> <team-id>|remove <sport> <team-id>|toggle-spoilers|cycle-sort|move <sport> <team-id> <-1|1>|toggle-pin <sport> <team-id>|detail [--no-cache|--live sport:id...]|slate [--no-cache]|state}\n' "$0" >&2
+    printf 'Usage: %s {add|search <query>|follow <sport> <team-id>|remove <sport> <team-id>|toggle-spoilers|cycle-sort|move <sport> <team-id> <-1|1>|toggle-pin <sport> <team-id>|detail [--no-cache|--live sport:id...]|detail-stream [--no-cache|--live sport:id...]|slate [--no-cache]|watch-game <sport> <game-id>|remind-game <sport> <game-id>|toggle-quiet|check-reminders|state}\n' "$0" >&2
     exit 2
     ;;
 esac
+result=$?
+case "${1:-}" in
+  add|follow|remove|toggle-spoilers|cycle-sort|move|toggle-pin|watch-game|remind-game|toggle-quiet)
+    (( result == 0 )) && read_state
+    ;;
+esac
+exit "$result"
