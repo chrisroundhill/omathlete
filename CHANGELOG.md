@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.1.3
+
+- Harden state/cache persistence with checked directory descriptors, no-follow bounded reads, private staging, safe locking, and atomic publication.
+- Reject symlinked or unsafe storage paths without changing their permissions; require Python 3.11+ for the storage boundary.
+- Add hostile-filesystem regression tests, a combined offline gate, and documented plugin-development guardrails.
+
 ## 0.1.2
 
 - Local-date Agenda, persistent Watch Later, and opt-in game reminders with quiet hours.
