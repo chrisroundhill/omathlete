@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.3
 
 - Harden state/cache persistence with checked directory descriptors, no-follow bounded reads, private staging, safe locking, and atomic publication.
 - Reject symlinked or unsafe storage paths without changing their permissions; require Python 3.11+ for the storage boundary.

@@ -1,6 +1,6 @@
-# 0.1.2 release checklist
+# 0.1.3 release checklist
 
-## Next release: storage-hardening gate
+## 0.1.3: storage-hardening gate
 
 Storage-hardening desktop acceptance: owner confirmed loading/refresh,
 settings persistence across restart, Watch Later, reminder configuration,
@@ -9,8 +9,7 @@ Local automated evidence: full offline suite passed; the final focused run
 passed all 12 storage tests and incremental-loading checks. Omarchy manifest
 validation and QML lint passed. This does not constitute a security audit.
 
-The acceptance recorded below applies to 0.1.2, not automatically to later code.
-For the next release:
+The historical acceptance recorded below applies to 0.1.2. For 0.1.3:
 
 - Run `bash tests/check.sh`, including hostile storage paths, no-follow reads,
   descriptor-pinned ancestor replacement, safe publication, and concurrency.
@@ -26,7 +25,7 @@ For the next release:
 Work stays on `dev` until the release is deliberately promoted. This document
 does not authorize a merge, push, tag, GitHub release, or marketplace submission.
 
-## Automated gates
+## Historical 0.1.2 automated gates
 
 Last local verification: 2026-09-08. Deterministic suites, live ESPN smoke,
 shell syntax, manifest check, QML lint, and whitespace checks passed. A focused
@@ -40,7 +39,7 @@ no matching private-key or common access-token patterns. This is not an audit.
 - Optional live ESPN smoke test: `tests/smoke.sh` (uses isolated state/cache).
 - `git diff --check` and review of the release diff for secrets or local paths.
 
-## Desktop and media gates
+## Historical 0.1.2 desktop and media gates
 
 - [x] Check Agenda with a crowded list and the active theme; traverse using only the keyboard (user confirmed).
 - [x] Remove first/middle/last Watch Later entries; selection remains visible and results stay protected (user confirmed).
@@ -56,7 +55,7 @@ Do not publish a whole-desktop capture containing unrelated applications.
 ## Promotion
 
 1. Complete the gates and finalize the changelog.
-2. Set `manifest.json` to 0.1.2 on `dev` when the candidate is accepted.
+2. Set `manifest.json` to 0.1.3 on `dev` when the candidate is accepted.
 3. Push `dev` and open a reviewed PR into `main`.
 4. After merge, tag the accepted main commit and create the GitHub release.
 5. Follow the marketplace's current exact-commit update/approval process.
